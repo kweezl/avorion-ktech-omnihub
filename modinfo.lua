@@ -28,6 +28,9 @@ meta =
     -- Tested Avorion version range. max = "2.*" covers all 2.x patch releases.
     dependencies = {
         {id = "Avorion", min = "2.0", max = "2.*"},
+        -- Mod Configuration Menu (MCM). Optional: the mod works standalone using built-in defaults;
+        -- when MCM is present, OmniHubConfig.get reads live values from it. See modconfig.lua.
+        {id = "3674093144", min = "1.0.0", optional = true},
     },
 
     -- Dual-side mod: attaches scripts with both server logic and client UI.
