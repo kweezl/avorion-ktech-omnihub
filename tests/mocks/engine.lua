@@ -70,9 +70,9 @@ return function(repoRoot)
 
     local function installGoods()
         goods = {
-            ["Steel"]       = { name = "Steel",       price = 120, level = 1 },
-            ["Steel Plate"] = { name = "Steel Plate", price = 300, level = 2 },
-            ["Iron Ore"]    = { name = "Iron Ore",    price = 40,  level = 0 },
+            ["Steel"]       = { name = "Steel",       price = 120, level = 1, icon = "data/textures/icons/steel.png" },
+            ["Steel Plate"] = { name = "Steel Plate", price = 300, level = 2, icon = "data/textures/icons/steel-plate.png" },
+            ["Iron Ore"]    = { name = "Iron Ore",    price = 40,  level = 0, icon = "data/textures/icons/ore.png" },
         }
     end
 

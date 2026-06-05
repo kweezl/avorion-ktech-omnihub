@@ -69,6 +69,15 @@ return function(runner)
         end
     end)
 
+    runner:test("icon comes from the primary result good (falls back to the mod icon)", function()
+        for key, def in pairs(OmniHubModuleDefs.getCatalog()) do
+            local primary  = def.production.results[1]
+            local g        = primary and goods[primary.name]
+            local expected = (g and g.icon) or "data/textures/omnihub.png"
+            assertEqual(def.icon, expected, "icon matches primary good icon for " .. key)
+        end
+    end)
+
     runner:test("getSortedList is ordered by name", function()
         local list = OmniHubModuleDefs.getSortedList()
         for i = 2, #list do
