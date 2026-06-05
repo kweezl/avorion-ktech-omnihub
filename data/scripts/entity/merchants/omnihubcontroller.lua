@@ -116,12 +116,255 @@ function OmniHub.update(timeStep)
 end
 
 -- ────────────────────────────────────────────────────────────────
--- Stubs called in update() — implemented in Tasks 6 & 7
+-- Stubs called in update() — runProductionCycles and computeTimeToProduce implemented in Task 7
 -- ────────────────────────────────────────────────────────────────
-function OmniHub.rebuild() end
 function OmniHub.runProductionCycles(timeStep) end
-function OmniHub.requestTraders(timeStep) end
 function OmniHub.computeTimeToProduce(key) return MIN_TIME_TO_PRODUCE end
+
+-- ────────────────────────────────────────────────────────────────
+-- Module registry
+-- ────────────────────────────────────────────────────────────────
+
+function OmniHub.rebuild()
+    if not onServer() then return end
+
+    local ingredientMap = {}
+    local resultMap     = {}
+    local garbageMap    = {}
+    local hasAny        = false
+
+    for key, count in pairs(installed) do
+        local prod = OmniHubModuleDefs.resolveRecipe(key)
+        if prod then
+            hasAny = true
+
+            for _, ing in pairs(prod.ingredients) do
+                local entry = ingredientMap[ing.name]
+                if not entry then
+                    ingredientMap[ing.name] = {name = ing.name, amount = ing.amount * count, optional = ing.optional}
+                else
+                    entry.amount = entry.amount + ing.amount * count
+                end
+            end
+
+            for _, res in pairs(prod.results) do
+                local entry = resultMap[res.name]
+                if not entry then
+                    resultMap[res.name] = {name = res.name, amount = res.amount * count}
+                else
+                    entry.amount = entry.amount + res.amount * count
+                end
+            end
+
+            if prod.garbages then
+                for _, gar in pairs(prod.garbages) do
+                    local entry = garbageMap[gar.name]
+                    if not entry then
+                        garbageMap[gar.name] = {name = gar.name, amount = gar.amount * count}
+                    else
+                        entry.amount = entry.amount + gar.amount * count
+                    end
+                end
+            end
+        end
+    end
+
+    local bought = {}
+    local sold   = {}
+    for _, v in pairs(ingredientMap) do bought[#bought + 1] = v end
+    for _, v in pairs(resultMap)     do sold[#sold + 1]     = v end
+    for _, v in pairs(garbageMap)    do sold[#sold + 1]     = v end
+
+    OmniHub.initializeTrading(bought, sold)
+
+    if hasAny then
+        aggregatedProduction = {
+            ingredients = bought,
+            results     = {},
+            garbages    = {},
+        }
+        for _, v in pairs(resultMap)  do aggregatedProduction.results[#aggregatedProduction.results + 1]   = v end
+        for _, v in pairs(garbageMap) do aggregatedProduction.garbages[#aggregatedProduction.garbages + 1] = v end
+    else
+        aggregatedProduction = nil
+    end
+
+    for key in pairs(installed) do
+        timeToProduce[key] = OmniHub.computeTimeToProduce(key)
+    end
+end
+
+-- requestTraders: mirrors factory.lua:1828-1885.
+-- Uses aggregatedProduction so it iterates a single merged table (like factory.lua's `production`).
+-- Cooldown is configurable; skips if no free docking positions.
+function OmniHub.requestTraders(timeStep)
+    if not onServer() then return end
+    if not aggregatedProduction then return end
+
+    OmniHub.traderCooldown = OmniHub.traderCooldown - timeStep
+    if OmniHub.traderCooldown > 0 then return end
+    OmniHub.traderCooldown = OmniHubConfig.get("traderRequestCooldown")
+
+    local sector = Sector()
+    if sector:getValue("war_zone") then return end
+
+    local entity = Entity()
+
+    if TradingUtility.hasTraders(entity) then return end
+
+    local immediate  = (sector.numPlayers == 0)
+    local pSeller    = OmniHub.getSellerProbability()
+    local wantSeller = random():test(pSeller)
+
+    if not wantSeller and OmniHub.trader.activelySell then
+        for _, result in pairs(aggregatedProduction.results) do
+            if OmniHub.trySpawnBuyer(entity, result, immediate) then return end
+        end
+    end
+
+    if wantSeller and OmniHub.trader.activelyRequest then
+        for _, ing in pairs(aggregatedProduction.ingredients) do
+            if OmniHub.trySpawnSeller(entity, ing, immediate) then return end
+        end
+    end
+
+    if not wantSeller and OmniHub.trader.activelySell then
+        for _, gar in pairs(aggregatedProduction.garbages) do
+            if OmniHub.trySpawnBuyer(entity, gar, immediate) then return end
+        end
+    end
+end
+
+-- Mirrors factory.lua:1893
+function OmniHub.getSellerProbability()
+    return lerp(OmniHub.trader.buyPriceFactor, 0.8, 1.2, 0.1, 0.9)
+end
+
+-- Mirrors factory.lua:1898
+function OmniHub.trySpawnSeller(entity, good, immediate)
+    local have    = OmniHub.getNumGoods(good.name)
+    local maximum = OmniHub.getMaxGoods(good.name)
+    if have < good.amount then
+        local amount = math.min(maximum, 500) - have
+        if immediate then amount = round(amount * 0.3) end
+        TradingUtility.spawnSeller(entity.id, getScriptPath(), good.name, amount, OmniHub, immediate)
+        return true
+    end
+end
+
+-- Mirrors factory.lua:1913
+function OmniHub.trySpawnBuyer(entity, good, immediate)
+    if not goods[good.name] then return end
+    local newAmount = OmniHub.getNumGoods(good.name) + good.amount
+    local maxGoods  = OmniHub.getMaxGoods(good.name)
+    local value     = newAmount * goods[good.name].price
+    if newAmount > maxGoods * 0.8 or (value > 100000 and random():test(0.3)) then
+        TradingUtility.spawnBuyer(entity.id, getScriptPath(), good.name, OmniHub, immediate)
+        return true
+    end
+end
+
+-- ────────────────────────────────────────────────────────────────
+-- Install / uninstall RPCs
+-- ────────────────────────────────────────────────────────────────
+
+function OmniHub.installModule(inventoryIndex)
+    if not onServer() then return end
+    local player    = Player(callingPlayer)
+    local inventory = player:getInventory()
+
+    local item = inventory:find(inventoryIndex)
+    if not item then return end
+    if item:getValue("subtype") ~= "OmniHubModule" then return end
+
+    local key = item:getValue("moduleKey")
+    if not key or key == "" then return end
+    if not OmniHubModuleDefs.get(key) then return end
+
+    local cap = OmniHubConfig.get("moduleCap")
+    if cap >= 0 then
+        local total = 0
+        for _, c in pairs(installed) do total = total + c end
+        if total >= cap then
+            player:sendChatMessage("OmniHub"%_t, ChatMessageType.Error, "Module capacity reached (%1%)."%_t, cap)
+            return
+        end
+    end
+
+    inventory:take(inventoryIndex)
+    installed[key] = (installed[key] or 0) + 1
+    OmniHub.rebuild()
+    OmniHub.sendModuleDataTo(player)
+end
+callable(OmniHub, "installModule")
+
+function OmniHub.uninstallModule(key)
+    if not onServer() then return end
+    if not installed[key] or installed[key] <= 0 then return end
+
+    local player    = Player(callingPlayer)
+    local inventory = player:getInventory()
+
+    installed[key] = installed[key] - 1
+    if installed[key] == 0 then
+        installed[key]          = nil
+        productionProgress[key] = nil
+        timeToProduce[key]      = nil
+    end
+
+    local item = UsableInventoryItem(
+        "data/scripts/items/omnihubmodule.lua",
+        Rarity(RarityType.Common),
+        key
+    )
+    inventory:addOrDrop(item, true)
+
+    OmniHub.rebuild()
+    OmniHub.sendModuleDataTo(player)
+end
+callable(OmniHub, "uninstallModule")
+
+-- ────────────────────────────────────────────────────────────────
+-- Client data sync
+-- ────────────────────────────────────────────────────────────────
+
+function OmniHub.sendModuleData()
+    if not onServer() then return end
+    OmniHub.sendModuleDataTo(Player(callingPlayer))
+end
+callable(OmniHub, "sendModuleData")
+
+function OmniHub.sendModuleDataTo(player)
+    local installedList = {}
+    for key, count in pairs(installed) do
+        local def = OmniHubModuleDefs.get(key)
+        if def then
+            installedList[#installedList + 1] = {key = key, name = def.name, count = count}
+        end
+    end
+    table.sort(installedList, function(a, b) return a.name < b.name end)
+
+    local inventory     = player:getInventory()
+    local inventoryList = {}
+    for i = 0, inventory.maxSlots - 1 do
+        if not inventory:slotEmpty(i) then
+            local invItem = inventory:find(i)
+            if invItem and invItem.itemType == InventoryItemType.UsableItem then
+                if invItem:getValue("subtype") == "OmniHubModule" then
+                    local ikey = invItem:getValue("moduleKey")
+                    local def  = OmniHubModuleDefs.get(ikey)
+                    inventoryList[#inventoryList + 1] = {
+                        slotIndex = i,
+                        key       = ikey,
+                        name      = def and def.name or ikey,
+                    }
+                end
+            end
+        end
+    end
+
+    invokeClientFunction(player, "receiveModuleData", installedList, inventoryList)
+end
 
 -- ────────────────────────────────────────────────────────────────
 -- Client-side UI handles (module-local, not persisted)
