@@ -32,7 +32,7 @@ from pathlib import Path
 # Fallback folder name used only if modinfo.lua declares no `modFolder` key (see
 # read_mod_folder). Normally the deploy folder name comes from modinfo.lua.
 MOD_FOLDER_NAME = "KTechOmniHub"
-WHITELIST = ["modinfo.lua", "data"]          # copied recursively (dirs) / as-is (files)
+WHITELIST = ["modinfo.lua", "modconfig.lua", "data"]  # copied recursively (dirs) / as-is (files)
 OPTIONAL_FILES = ["thumb.png", "thumb.jpg"]  # Workshop thumbnail, copied only if present
 PRESERVE_MODINFO_KEYS = ["id"]               # steam-injected keys carried across a clean build
 
