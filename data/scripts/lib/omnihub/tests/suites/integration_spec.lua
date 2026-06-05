@@ -3,6 +3,7 @@ package.path = package.path .. ";data/scripts/lib/?.lua"
 local OmniHubTest       = include("lib/omnihub/tests/framework")
 local OmniHubModuleDefs = include("lib/omnihub/moduledefs")
 local OmniHubProduction = include("lib/omnihub/production")
+local OmniHubConfig = include("lib/omnihub/config")
 
 local tru   = OmniHubTest.assertTrue
 local eq    = OmniHubTest.assertEqual
@@ -75,5 +76,41 @@ return function(runner)
         tru(agg.hasAny, "hasAny for a real installed module")
         notn(agg.aggregatedProduction, "aggregatedProduction built from real recipe")
         tru(#agg.aggregatedProduction.results > 0, "real recipe yields at least one result")
+    end)
+
+    runner:test("config percent keys return finite fractions", function()
+        local drop  = OmniHubConfig.get("dropChance")
+        local price = OmniHubConfig.get("modulePriceFactor")
+        tru(type(drop) == "number" and drop >= 0 and drop <= 1, "dropChance is a 0..1 fraction")
+        tru(type(price) == "number" and price > 0 and price ~= math.huge, "modulePriceFactor positive finite")
+    end)
+
+    runner:test("MCM round-trip reflects in OmniHubConfig.get", function()
+        local mcm = nil
+        local ok, mod = pcall(include, "mcm")
+        if ok then mcm = mod end
+        if not mcm then
+            tru(true, "skipped: MCM not installed")
+            return
+        end
+        local cfg = mcm.bind("ktech-omnihub")
+        local original = cfg.get("sellingModuleCount")
+        local target = (original == 12) and 13 or 12
+        cfg.set("sellingModuleCount", target)
+        eq(OmniHubConfig.get("sellingModuleCount"), target, "get reflects MCM-set value")
+        cfg.set("sellingModuleCount", original)  -- restore
+    end)
+
+    -- Contract guard: the vanilla shop API the supplier calls must exist (catches an Avorion rename).
+    runner:test("vanilla shop API used by the supplier exists", function()
+        local ShopAPI = include("shop")
+        notn(ShopAPI, "shop lib loads")
+        eq(type(ShopAPI.CreateNamespace), "function", "ShopAPI.CreateNamespace exists")
+        local ns = ShopAPI.CreateNamespace()
+        notn(ns.shop, "namespace has .shop")
+        for _, m in ipairs({"add", "setSpecialOffer", "restock", "initUI", "initialize"}) do
+            eq(type(ns.shop[m]), "function", "shop:" .. m .. " exists")
+        end
+        notn(ns.shop.itemsPerPage, "shop.itemsPerPage exists")
     end)
 end
