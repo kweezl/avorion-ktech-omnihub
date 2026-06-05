@@ -1,22 +1,78 @@
 package.path = package.path .. ";data/scripts/lib/?.lua"
 
 -- namespace OmniHubConfig
+-- Single source of truth for the mod's configuration. OmniHubConfig.schema below is BOTH the MCM
+-- option schema (modconfig.lua returns it verbatim) AND the source of the built-in defaults used
+-- when MCM is absent — so every default/range/label is declared in exactly one place.
+-- Percent options (modulePriceFactor, dropChance) are declared in MCM UI units (integer percents);
+-- get() and the derived `defaults` table convert them to the fractions callers expect.
 OmniHubConfig = {}
-
--- Built-in defaults, used when MCM is not installed. These are the FRACTIONAL forms callers expect
--- (dropChance/modulePriceFactor as 0.5/1.0). The MCM schema in modconfig.lua stores those two as
--- integer percents (50/100); get() divides the MCM-returned value by 100. modconfig_spec asserts
--- the two stay consistent.
-OmniHubConfig.defaults = {
-    moduleCap             = -1,   -- -1 = unlimited; >= 0 = hard cap on total installed module units
-    dropChance            = 0.5,  -- probability each installed module unit drops on hub destruction
-    modulePriceFactor     = 1.0,  -- multiplier applied to getFactoryCost() for module shop prices
-    traderRequestCooldown = 90,   -- seconds between trader spawn attempts (matches vanilla factory.lua)
-    sellingModuleCount    = 10,   -- how many modules the OmniHub Supplier stocks at once
-}
 
 -- Keys MCM stores as integer percents; converted to fractions on read.
 local PERCENT_KEYS = { dropChance = true, modulePriceFactor = true }
+
+-- THE schema. The only place options/defaults/ranges/labels are declared. modconfig.lua returns
+-- this verbatim for MCM; the runtime defaults below are derived from it.
+OmniHubConfig.schema = {
+    {
+        key         = "sellingModuleCount",
+        type        = "number",
+        title       = "Modules for sale",
+        description = "How many factory modules the OmniHub Supplier stocks at once.",
+        default     = 10,
+        min         = 1,
+        max         = 50,
+    },
+    {
+        key         = "modulePriceFactor",
+        type        = "slider",
+        title       = "Module price",
+        description = "Multiplier on module shop price. 100% = vanilla factory cost.",
+        default     = 100,
+        min         = 10,
+        max         = 500,
+        step        = 10,
+        unit        = "%",
+    },
+    {
+        key         = "moduleCap",
+        type        = "number",
+        title       = "Installed module cap",
+        description = "Maximum installed module units per hub. -1 = unlimited.",
+        default     = -1,
+        min         = -1,
+        max         = 999,
+    },
+    {
+        key         = "dropChance",
+        type        = "slider",
+        title       = "Module drop chance",
+        description = "Chance each installed unit drops as loot when the hub is destroyed.",
+        default     = 50,
+        min         = 0,
+        max         = 100,
+        step        = 5,
+        unit        = "%",
+    },
+    {
+        key         = "traderRequestCooldown",
+        type        = "number",
+        title       = "Trader request cooldown",
+        description = "Seconds between auto-sell trader spawn attempts.",
+        default     = 90,
+        min         = 10,
+        max         = 600,
+    },
+}
+
+-- Built-in defaults, DERIVED from the schema in the FRACTIONAL forms callers expect (percent options
+-- divided by 100, e.g. dropChance 50 -> 0.5). Used as the fallback when MCM is not installed.
+OmniHubConfig.defaults = {}
+for _, opt in ipairs(OmniHubConfig.schema) do
+    local v = opt.default
+    if PERCENT_KEYS[opt.key] and type(v) == "number" then v = v / 100 end
+    OmniHubConfig.defaults[opt.key] = v
+end
 
 -- Resolve + bind MCM ONCE at load. include() throws on a missing module and MCM is an OPTIONAL
 -- dependency, so guard with pcall: absent MCM -> config nil -> built-in defaults are used.
