@@ -16,9 +16,13 @@ OmniHubSupplier = ShopAPI.CreateNamespace()
 -- rows never reach (and swallow clicks on) the pager row at the bottom of the tab.
 local BUY_NO_PAGER_LIMIT = 14
 local BUY_PAGE_SIZE      = 12
--- Module prices reach hundreds of millions / billions, which overflow the narrow vanilla price
--- column at the default font 14. Render the price a bit smaller so large values stay in-column.
-local BUY_PRICE_FONT     = 11
+
+-- Column x-bounds for our reflowed Buy tab (showAmountBoxes + hideMaterialLabel). Our modules have
+-- no material, so we collapse it and reclaim the space: a small Tech-level column, then Stock, then a
+-- WIDE Price column so large prices (hundreds of millions / billions) fit at the normal font 14.
+local COL_TECH  = {410, 455}
+local COL_STOCK = {462, 512}
+local COL_PRICE = {516, 630}
 
 -- ────────────────────────────────────────────────────────────────
 -- Station identity
@@ -97,11 +101,31 @@ function OmniHubSupplier.initUI()
         "OmniHub Supplier"%_t,               -- window caption
         "Modules"%_t,                        -- Buy tab caption
         "data/textures/icons/factory.png",   -- Buy tab icon
-        {showAmountBoxes = true}
+        {showAmountBoxes = true, hideMaterialLabel = true}  -- modules have no material; reclaim it
     )
     -- Supplier only sells modules to the player — hide the Sell/Buyback tabs.
     OmniHubSupplier.shop.tabbedWindow:deactivateTab(OmniHubSupplier.shop.sellTab)
     OmniHubSupplier.shop.tabbedWindow:deactivateTab(OmniHubSupplier.shop.buyBackTab)
+
+    -- Reflow the Buy-tab columns: collapse the (unused) material column into a compact Tech-level
+    -- column, then Stock, then a WIDE Price column so large module prices fit at the normal font.
+    -- We move the data labels per line plus the two reachable headers (# and ¢) so headers stay aligned.
+    local function setCol(el, bounds)
+        if not el then return end
+        local p, s = el.position, el.size
+        el.position = vec2(bounds[1], p.y)
+        el.size     = vec2(bounds[2] - bounds[1], s.y)
+    end
+    for _, line in pairs(OmniHubSupplier.shop.soldItemLines) do
+        setCol(line.techLabel,  COL_TECH)
+        setCol(line.stockLabel, COL_STOCK)
+        setCol(line.priceLabel, COL_PRICE)
+    end
+    setCol(OmniHubSupplier.shop.buyHeadlineAmountLabel, COL_STOCK)  -- the "#" header
+    setCol(OmniHubSupplier.shop.currencyLabel,          COL_PRICE)  -- the "¢" header
+    if OmniHubSupplier.shop.specialOfferUI then
+        setCol(OmniHubSupplier.shop.specialOfferUI.priceLabel, COL_PRICE)  -- special offer price too
+    end
 
     -- Dev-mode-only: a button to force a restock (re-roll subset + special offer) without waiting
     -- for the ~20-min special-offer timer. Created on the Buy tab; bound to a namespace callback.
@@ -176,20 +200,23 @@ function OmniHubSupplier.shop:receiveSoldItems(...)
     return base_receiveSoldItems(self, ...)
 end
 
--- Resolve a module item's display name WITHOUT item:getName(). For UsableItems, the vanilla
--- SellableInventoryItem:getName reads the tooltip's first line on the client — but our module items'
--- tooltips don't survive the shop's network sync, so getName() throws ("Tooltip:getLine range_check")
--- and aborts the whole render. Resolve from the stored moduleKey via the catalog (reliable in this
--- entity VM), falling back to the plain name, then a constant.
-local function moduleDisplayName(item)
+-- Resolve the catalog def for a shop item from its stored moduleKey (reliable in this entity VM).
+local function moduleDef(item)
     local inner = item and item.item
     if inner and inner.getValue then
         local ok, key = pcall(inner.getValue, inner, "moduleKey")
-        if ok and key and key ~= "" then
-            local def = OmniHubModuleDefs.get(key)
-            if def and def.name then return def.name end
-        end
+        if ok and key and key ~= "" then return OmniHubModuleDefs.get(key) end
     end
+    return nil
+end
+
+-- Display name WITHOUT item:getName(). For UsableItems the vanilla SellableInventoryItem:getName
+-- reads the tooltip's first line on the client — but our module tooltips don't survive the shop's
+-- network sync, so getName() throws ("Tooltip:getLine range_check") and aborts the whole render.
+-- Prefer the catalog def's name, then the plain name, then a constant.
+local function moduleDisplayName(item, def)
+    def = def or moduleDef(item)
+    if def and def.name then return def.name end
     local n = item and item.name
     if n ~= nil and n ~= "" then return n end
     return "OmniHub Module"
@@ -230,8 +257,9 @@ function OmniHubSupplier.shop:updateSellGui()
         local line = self.soldItemLines[uiIndex]
         line:show()
         line.item = item  -- bind the paged item so renderUI shows the right tooltip on hover
+        local def = moduleDef(item)
 
-        line.nameLabel.caption = moduleDisplayName(item)%_t
+        line.nameLabel.caption = moduleDisplayName(item, def)%_t
         line.nameLabel.color = item.rarity.color
         line.nameLabel.bold = false
 
@@ -253,11 +281,11 @@ function OmniHubSupplier.shop:updateSellGui()
             local price = self:getSellPriceAndTax(item.price, faction, buyer)
             line.priceLabel.caption = createMonetaryString(price)
         end
-        line.priceLabel.fontSize = BUY_PRICE_FONT  -- keep large prices within the narrow price column
         line.priceReductionLabel:hide()
 
         line.stockLabel.caption = item.amount
-        line.techLabel.caption = item.tech or ""
+        -- Factory tech level (level of the primary produced good, 0..9) in the reclaimed Tech column.
+        line.techLabel.caption = (def and def.techLevel ~= nil) and tostring(def.techLevel) or ""
 
         local msg, args = self:canBeBought(item, craft, buyer)
         if msg then

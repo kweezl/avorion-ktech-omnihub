@@ -36,6 +36,15 @@ local function buildCatalog()
             if not prod.mine and not seen[prod] then
                 seen[prod] = true
                 local key = makeKey(goodName, idx)
+                -- Tech level = the level of the factory's PRIMARY result good (goods carry a `level`
+                -- field, 0..9). This matches how the vanilla station founder tiers factories:
+                -- Basic = 0, Low = 1-3, Advanced = 4-6, High = 7-9 (see stationfounder.lua).
+                local techLevel = nil
+                local primaryResult = prod.results and prod.results[1]
+                if primaryResult then
+                    local g = goods[primaryResult.name]
+                    if g then techLevel = g.level end
+                end
                 result[key] = {
                     key             = key,
                     goodName        = goodName,
@@ -43,6 +52,7 @@ local function buildCatalog()
                     production      = prod,
                     name            = getTranslatedFactoryName(prod),
                     price           = getFactoryCost(prod),
+                    techLevel       = techLevel,
                     icon            = "data/textures/icons/factory.png",
                 }
             end
