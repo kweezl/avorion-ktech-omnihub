@@ -53,7 +53,7 @@ local function buildCatalog()
                     name            = getTranslatedFactoryName(prod),
                     price           = getFactoryCost(prod),
                     techLevel       = techLevel,
-                    icon            = "data/textures/icons/factory.png",
+                    icon            = "data/textures/omnihub.png",
                 }
             end
         end

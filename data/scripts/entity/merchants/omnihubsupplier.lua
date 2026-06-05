@@ -76,6 +76,14 @@ function OmniHubSupplier.shop:addItems()
     local subset   = OmniHubSupplierStock.pickRandomSubset(keys, count, rng)
     local offerKey = OmniHubSupplierStock.pickSpecialOffer(subset, rng)
 
+    -- Add (and therefore display) the stock sorted by factory name so players can find a module fast
+    -- across pages. Sort after the random pick + special-offer pick, so only the display order is
+    -- alphabetical (the selection itself stays random). soldItems keeps this order through the
+    -- broadcast, so every page is in order.
+    table.sort(subset, function(a, b)
+        return ((catalog[a] and catalog[a].name) or a) < ((catalog[b] and catalog[b].name) or b)
+    end)
+
     for _, key in ipairs(subset) do
         local def  = catalog[key]
         local item = UsableInventoryItem(
@@ -104,7 +112,7 @@ function OmniHubSupplier.initUI()
         "Buy Modules"%_t,                    -- interaction-menu caption
         "OmniHub Supplier"%_t,               -- window caption
         "Modules"%_t,                        -- Buy tab caption
-        "data/textures/icons/factory.png",   -- Buy tab icon
+        "data/textures/omnihub.png",         -- Buy tab icon (custom OmniHub icon)
         {showAmountBoxes = true, hideMaterialLabel = true}  -- modules have no material; reclaim it
     )
     -- Supplier only sells modules to the player — hide the Sell/Buyback tabs.
