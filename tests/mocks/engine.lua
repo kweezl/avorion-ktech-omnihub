@@ -6,6 +6,9 @@
 -- registry, pure suites). The attached controller and the integration suite are never loaded here.
 
 return function(repoRoot)
+    -- Lets modconfig_spec locate the mod-root modconfig.lua when running off-engine.
+    _G.OMNIHUB_MODCONFIG_PATH = repoRoot .. "/modconfig.lua"
+
     -- %_t string-translation operator (the game injects this via stringutility). Identity here.
     _t = {}
     local smeta = getmetatable("")
