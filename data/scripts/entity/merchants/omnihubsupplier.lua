@@ -16,6 +16,9 @@ OmniHubSupplier = ShopAPI.CreateNamespace()
 -- rows never reach (and swallow clicks on) the pager row at the bottom of the tab.
 local BUY_NO_PAGER_LIMIT = 14
 local BUY_PAGE_SIZE      = 12
+-- Module prices reach hundreds of millions / billions, which overflow the narrow vanilla price
+-- column at the default font 14. Render the price a bit smaller so large values stay in-column.
+local BUY_PRICE_FONT     = 11
 
 -- ────────────────────────────────────────────────────────────────
 -- Station identity
@@ -250,6 +253,7 @@ function OmniHubSupplier.shop:updateSellGui()
             local price = self:getSellPriceAndTax(item.price, faction, buyer)
             line.priceLabel.caption = createMonetaryString(price)
         end
+        line.priceLabel.fontSize = BUY_PRICE_FONT  -- keep large prices within the narrow price column
         line.priceReductionLabel:hide()
 
         line.stockLabel.caption = item.amount
