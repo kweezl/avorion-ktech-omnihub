@@ -100,6 +100,17 @@ function OmniHubSupplier.initUI()
             "Refresh Stock"%_t, "onRefreshStockPressed")
         OmniHubSupplier.refreshButton.maxTextSize = 14
     end
+
+    -- Buy-tab pagination controls. Shown only when stock exceeds one page (updated in updateSellGui).
+    local shop = OmniHubSupplier.shop
+    shop.soldItemsPage = 0
+    local tab  = shop.buyTab
+    local size = tab.size
+    shop.prevPageButton = tab:createButton(Rect(10, size.y - 40, 70, size.y - 12), "<", "onPrevPagePressed")
+    shop.nextPageButton = tab:createButton(Rect(80, size.y - 40, 140, size.y - 12), ">", "onNextPagePressed")
+    shop.pageLabelBuy   = tab:createLabel(vec2(150, size.y - 38), "", 14)
+    shop.prevPageButton:hide()
+    shop.nextPageButton:hide()
 end
 
 -- ────────────────────────────────────────────────────────────────
@@ -119,5 +130,145 @@ function OmniHubSupplier.omniRefreshStock()
     OmniHubSupplier.shop:restock()  -- restock() re-runs addItems + broadcasts the new items
 end
 callable(OmniHubSupplier, "omniRefreshStock")
+
+-- ────────────────────────────────────────────────────────────────
+-- Buy-tab pagination (override of the vanilla single-page sold-items render)
+-- ────────────────────────────────────────────────────────────────
+
+function OmniHubSupplier.onPrevPagePressed()
+    local shop = OmniHubSupplier.shop
+    shop.soldItemsPage = (shop.soldItemsPage or 0) - 1
+    shop:updateSellGui()
+end
+
+function OmniHubSupplier.onNextPagePressed()
+    local shop = OmniHubSupplier.shop
+    shop.soldItemsPage = (shop.soldItemsPage or 0) + 1
+    shop:updateSellGui()
+end
+
+-- Paged replacement for Shop:updateSellGui. Renders only the current page of soldItems onto the
+-- fixed soldItemLines, plus the pager controls. Mirrors the vanilla per-line population, but maps
+-- the page slice onto lines 1..itemsPerPage. Special offer (specialOfferUI) is left to vanilla,
+-- which our override calls through for everything except the sold-line loop.
+function OmniHubSupplier.shop:updateSellGui()
+    if not self.guiInitialized then return end
+
+    for _, line in pairs(self.soldItemLines) do line:hide() end
+    if self.specialOfferUI then self.specialOfferUI:toSoldOut() end
+
+    local faction = Faction()
+    local buyer   = Player()
+    local craft   = buyer.craft
+    if craft and craft.factionIndex == buyer.allianceIndex then buyer = buyer.alliance end
+
+    local total = #self.soldItems
+    if total == 0 then
+        local topLine = self.soldItemLines[1]
+        topLine.nameLabel:show()
+        topLine.nameLabel.color = ColorRGB(1.0, 1.0, 1.0)
+        topLine.nameLabel.bold = false
+        topLine.nameLabel.caption = "We are completely sold out."%_t
+    end
+
+    local itemStart, itemEnd, page = OmniHubSupplierStock.pageSlice(total, self.itemsPerPage, self.soldItemsPage or 0)
+    self.soldItemsPage = page
+
+    local uiIndex = 1
+    for index = itemStart, itemEnd do
+        local item = self.soldItems[index]
+        if item == nil then break end
+        local line = self.soldItemLines[uiIndex]
+        line:show()
+
+        line.nameLabel.caption = item:getName()%_t
+        line.nameLabel.color = item.rarity.color
+        line.nameLabel.bold = false
+
+        if item.material then
+            line.materialLabel.caption = item.material.name
+            line.materialLabel.color = item.material.color
+        else
+            line.materialLabel:hide()
+        end
+
+        if item.icon then
+            line.icon.picture = item.icon
+            line.icon.color = item.rarity.color
+        end
+
+        if item.displayedPrice then
+            line.priceLabel.caption = item.displayedPrice
+        else
+            local price = self:getSellPriceAndTax(item.price, faction, buyer)
+            line.priceLabel.caption = createMonetaryString(price)
+        end
+        line.priceReductionLabel:hide()
+
+        line.stockLabel.caption = item.amount
+        line.techLabel.caption = item.tech or ""
+
+        local msg, args = self:canBeBought(item, craft, buyer)
+        if msg then
+            line.button.active = false
+            line.button.tooltip = string.format(msg%_t, unpack(args or {}))
+        else
+            line.button.active = true
+            line.button.tooltip = nil
+        end
+
+        uiIndex = uiIndex + 1
+    end
+
+    -- Pager visibility + label.
+    local multiPage = total > self.itemsPerPage
+    if self.prevPageButton then
+        if multiPage then
+            self.prevPageButton:show(); self.nextPageButton:show()
+            self.prevPageButton.active = page > 0
+            local maxPage = math.max(0, math.ceil(total / self.itemsPerPage) - 1)
+            self.nextPageButton.active = page < maxPage
+            self.pageLabelBuy.caption = string.format("%d - %d / %d", itemStart, itemEnd, total)
+        else
+            self.prevPageButton:hide(); self.nextPageButton:hide()
+            self.pageLabelBuy.caption = ""
+        end
+    end
+
+    -- Re-render the special offer exactly as vanilla does (kept identical to Shop:updateSellGui).
+    local offer = self.specialOffer.item
+    if offer and self.specialOfferUI then
+        local specialUI = self.specialOfferUI
+        specialUI:show()
+        specialUI.nameLabel.caption = offer.name%_t
+        specialUI.nameLabel.color = offer.rarity.color
+        specialUI.nameLabel.bold = false
+        if offer.material then
+            specialUI.materialLabel.caption = offer.material.name
+            specialUI.materialLabel.color = offer.material.color
+        else
+            specialUI.materialLabel:hide()
+        end
+        if offer.icon then
+            specialUI.icon.picture = offer.icon
+            specialUI.icon.color = offer.rarity.color
+        end
+        if offer.amount then specialUI.stockLabel.caption = offer.amount end
+        specialUI.techLabel.caption = offer.tech or ""
+        specialUI.timeLeftLabel.caption = "LIMITED TIME OFFER!"%_t
+        specialUI.label.caption = "SPECIAL OFFER: -30% OFF"%_t
+        local price = self:getSellPriceAndTax(offer.price, faction, buyer)
+        specialUI.priceLabel.caption = createMonetaryString(price * 0.7)
+        specialUI.priceReductionLabel.caption = "${percentage} OFF!"%_t % {percentage = "30%"}
+        local msg, args = self:canBeBought(offer, craft, buyer)
+        if msg then
+            specialUI.button.active = false
+            specialUI.button.tooltip = string.format(msg%_t, unpack(args or {}))
+        else
+            specialUI.button.active = true
+            specialUI.button.tooltip = nil
+        end
+    end
+end
 
 return OmniHubSupplier
