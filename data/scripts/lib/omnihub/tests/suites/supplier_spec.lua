@@ -28,6 +28,7 @@ return function(runner)
         eq(type(OmniHubSupplierStock.pickRandomSubset), "function", "pickRandomSubset exists")
         eq(type(OmniHubSupplierStock.pickSpecialOffer), "function", "pickSpecialOffer exists")
         eq(type(OmniHubSupplierStock.pageSlice),        "function", "pageSlice exists")
+        eq(type(OmniHubSupplierStock.rollStock),        "function", "rollStock exists")
     end)
 
     runner:test("pickRandomSubset returns n distinct keys", function()
@@ -82,5 +83,23 @@ return function(runner)
         eq(page, 1, "clamped to last page"); eq(s, 16, "last-page start"); eq(e, 23, "last-page end")
         s, e = OmniHubSupplierStock.pageSlice(0, 15, 0)
         eq(s, 0, "empty start"); eq(e, 0, "empty end")
+    end)
+
+    runner:test("rollStock returns a value within [min, max]", function()
+        -- rng returns 1 -> lo; sequence covers the range endpoints.
+        eq(OmniHubSupplierStock.rollStock(5, 20, seqRng({1})), 5,  "rng=1 -> min")
+        -- rng returns hi (=max-min+1=16) -> max.
+        eq(OmniHubSupplierStock.rollStock(5, 20, function() return 16 end), 20, "rng=range -> max")
+        for v = 1, 16 do
+            local s = OmniHubSupplierStock.rollStock(5, 20, function() return v end)
+            tru(s >= 5 and s <= 20, "in range for rng=" .. v .. " (got " .. s .. ")")
+        end
+    end)
+
+    runner:test("rollStock handles min==max and swaps min>max", function()
+        eq(OmniHubSupplierStock.rollStock(7, 7, function() return 1 end), 7, "min==max -> that value")
+        -- min > max is swapped, so range is [3,9]; rng=1 -> 3.
+        eq(OmniHubSupplierStock.rollStock(9, 3, function() return 1 end), 3, "swapped min/max -> low end")
+        eq(OmniHubSupplierStock.rollStock(9, 3, function() return 7 end), 9, "swapped min/max -> high end")
     end)
 end

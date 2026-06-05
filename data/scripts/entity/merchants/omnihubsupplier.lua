@@ -11,6 +11,12 @@ local OmniHubSupplierStock = include("lib/omnihub/supplierstock")
 -- namespace OmniHubSupplier
 OmniHubSupplier = ShopAPI.CreateNamespace()
 
+-- Buy-tab paging. With the special-offer header (headerY = 70) the tab fits ~14 rows above the pager
+-- controls, so show up to that many without a pager; beyond it, paginate at this many per page so the
+-- rows never reach (and swallow clicks on) the pager row at the bottom of the tab.
+local BUY_NO_PAGER_LIMIT = 14
+local BUY_PAGE_SIZE      = 12
+
 -- ────────────────────────────────────────────────────────────────
 -- Station identity
 -- ────────────────────────────────────────────────────────────────
@@ -46,14 +52,17 @@ end
 function OmniHubSupplier.shop:addItems()
     local priceFactor = OmniHubConfig.get("modulePriceFactor")
     local count       = OmniHubConfig.get("sellingModuleCount")
+    local stockMin    = OmniHubConfig.get("stockMin")
+    local stockMax    = OmniHubConfig.get("stockMax")
     local catalog     = OmniHubModuleDefs.getCatalog()
 
-    -- Catalog keys as an array, so the pure picker can sample distinct entries.
+    -- Catalog keys as an array, so the pure picker can sample distinct entries. pickRandomSubset
+    -- clamps `count` to #keys, so the effective cap is the number of available factory recipes.
     local keys = {}
     for key in pairs(catalog) do keys[#keys + 1] = key end
 
-    local rng     = makeRng()
-    local subset  = OmniHubSupplierStock.pickRandomSubset(keys, count, rng)
+    local rng      = makeRng()
+    local subset   = OmniHubSupplierStock.pickRandomSubset(keys, count, rng)
     local offerKey = OmniHubSupplierStock.pickSpecialOffer(subset, rng)
 
     for _, key in ipairs(subset) do
@@ -64,10 +73,11 @@ function OmniHubSupplier.shop:addItems()
             key
         )
         item.price = math.ceil(def.price * priceFactor)
+        local stock = OmniHubSupplierStock.rollStock(stockMin, stockMax, rng)  -- random per module
         if key == offerKey then
-            self:setSpecialOffer(item, 1)
+            self:setSpecialOffer(item, stock)
         else
-            self:add(item, 99)
+            self:add(item, stock)
         end
     end
 end
@@ -155,6 +165,14 @@ function OmniHubSupplier.shop:onShowWindow(...)
     return base_onShowWindow(self, ...)
 end
 
+-- Reset to the first page whenever fresh stock arrives from the server (e.g. after a restock/Refresh
+-- Stock), so the player isn't stranded on a now-out-of-range page.
+local base_receiveSoldItems = OmniHubSupplier.shop.receiveSoldItems
+function OmniHubSupplier.shop:receiveSoldItems(...)
+    self.soldItemsPage = 0
+    return base_receiveSoldItems(self, ...)
+end
+
 -- Paged replacement for Shop:updateSellGui. Renders only the current page of soldItems onto the
 -- fixed soldItemLines, plus the pager controls. Mirrors the vanilla per-line population, but maps
 -- the page slice onto lines 1..itemsPerPage. Special offer (specialOfferUI) is left to vanilla,
@@ -179,7 +197,8 @@ function OmniHubSupplier.shop:updateSellGui()
         topLine.nameLabel.caption = "We are completely sold out."%_t
     end
 
-    local itemStart, itemEnd, page = OmniHubSupplierStock.pageSlice(total, self.itemsPerPage, self.soldItemsPage or 0)
+    local perPage = (total > BUY_NO_PAGER_LIMIT) and BUY_PAGE_SIZE or self.itemsPerPage
+    local itemStart, itemEnd, page = OmniHubSupplierStock.pageSlice(total, perPage, self.soldItemsPage or 0)
     self.soldItemsPage = page
 
     local uiIndex = 1
@@ -229,12 +248,12 @@ function OmniHubSupplier.shop:updateSellGui()
     end
 
     -- Pager visibility + label.
-    local multiPage = total > self.itemsPerPage
+    local multiPage = total > BUY_NO_PAGER_LIMIT
     if self.prevPageButton then
         if multiPage then
             self.prevPageButton:show(); self.nextPageButton:show()
             self.prevPageButton.active = page > 0
-            local maxPage = math.max(0, math.ceil(total / self.itemsPerPage) - 1)
+            local maxPage = math.max(0, math.ceil(total / perPage) - 1)
             self.nextPageButton.active = page < maxPage
             self.pageLabelBuy.caption = string.format("%d - %d / %d", itemStart, itemEnd, total)
         else

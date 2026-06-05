@@ -15,7 +15,7 @@ return function(runner)
         eq(type(OmniHubConfig.get),      "function", "OmniHubConfig.get is a function")
         eq(type(OmniHubConfig.defaults), "table",    "OmniHubConfig.defaults is a table")
         for _, key in ipairs({"moduleCap", "dropChance", "modulePriceFactor",
-                              "traderRequestCooldown", "sellingModuleCount"}) do
+                              "traderRequestCooldown", "sellingModuleCount", "stockMin", "stockMax"}) do
             OmniHubTest.assertNotNil(OmniHubConfig.defaults[key], "defaults has key: " .. key)
         end
     end)
@@ -26,6 +26,8 @@ return function(runner)
         eq(OmniHubConfig.get("modulePriceFactor"),     1.0,  "modulePriceFactor default (fraction)")
         eq(OmniHubConfig.get("traderRequestCooldown"), 90,   "traderRequestCooldown default")
         eq(OmniHubConfig.get("sellingModuleCount"),    10,   "sellingModuleCount default")
+        eq(OmniHubConfig.get("stockMin"),              5,    "stockMin default")
+        eq(OmniHubConfig.get("stockMax"),              20,   "stockMax default")
     end)
 
     runner:test("get returns nil for unknown key", function()

@@ -33,6 +33,15 @@ function OmniHubSupplierStock.pickSpecialOffer(subset, rng)
     return subset[rng(count)]
 end
 
+-- Returns a random integer stock count in [min, max] (inclusive). Swaps the bounds if min > max so
+-- the caller never has to pre-validate, and floors min at 0. rng(hi) returns an integer in [1, hi].
+function OmniHubSupplierStock.rollStock(minStock, maxStock, rng)
+    local lo, hi = minStock, maxStock
+    if lo > hi then lo, hi = hi, lo end
+    if lo < 0 then lo = 0 end
+    return lo - 1 + rng(hi - lo + 1)
+end
+
 -- Computes the 1-based inclusive item bounds for a 0-based page over `total` items at `perPage`
 -- per page. Returns itemStart, itemEnd, clampedPage. total==0 returns 0, 0, 0.
 function OmniHubSupplierStock.pageSlice(total, perPage, page)

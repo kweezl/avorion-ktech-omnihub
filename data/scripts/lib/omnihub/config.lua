@@ -18,10 +18,28 @@ OmniHubConfig.schema = {
         key         = "sellingModuleCount",
         type        = "number",
         title       = "Modules for sale",
-        description = "How many factory modules the OmniHub Supplier stocks at once.",
+        description = "How many factory modules the OmniHub Supplier stocks at once (clamped at runtime to the number of available factory recipes).",
         default     = 10,
         min         = 1,
-        max         = 50,
+        max         = 200,
+    },
+    {
+        key         = "stockMin",
+        type        = "number",
+        title       = "Stock per module (min)",
+        description = "Minimum units stocked per module. Each module rolls a random stock between min and max (swapped if min > max).",
+        default     = 5,
+        min         = 1,
+        max         = 9999,
+    },
+    {
+        key         = "stockMax",
+        type        = "number",
+        title       = "Stock per module (max)",
+        description = "Maximum units stocked per module.",
+        default     = 20,
+        min         = 1,
+        max         = 9999,
     },
     {
         key         = "modulePriceFactor",
@@ -64,6 +82,15 @@ OmniHubConfig.schema = {
         max         = 600,
     },
 }
+
+-- Append the allowed range + default to each option's description, so the MCM input fields make the
+-- valid values obvious (a bare integer box doesn't communicate min/max). Derived from the schema so
+-- the printed range can never disagree with the enforced one.
+for _, opt in ipairs(OmniHubConfig.schema) do
+    local unit = opt.unit or ""
+    opt.description = string.format("%s  [range %s%s to %s%s, default %s%s]",
+        opt.description, opt.min, unit, opt.max, unit, opt.default, unit)
+end
 
 -- Built-in defaults, DERIVED from the schema in the FRACTIONAL forms callers expect (percent options
 -- divided by 100, e.g. dropChance 50 -> 0.5). Used as the fallback when MCM is not installed.
