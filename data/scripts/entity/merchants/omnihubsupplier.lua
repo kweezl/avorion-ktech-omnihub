@@ -17,12 +17,16 @@ OmniHubSupplier = ShopAPI.CreateNamespace()
 local BUY_NO_PAGER_LIMIT = 14
 local BUY_PAGE_SIZE      = 12
 
--- Column x-bounds for our reflowed Buy tab (showAmountBoxes + hideMaterialLabel). Our modules have
--- no material, so we collapse it and reclaim the space: a small Tech-level column, then Stock, then a
--- WIDE Price column so large prices (hundreds of millions / billions) fit at the normal font 14.
-local COL_TECH  = {410, 455}
-local COL_STOCK = {462, 512}
-local COL_PRICE = {516, 630}
+-- Buy-tab column reflow (with showAmountBoxes + hideMaterialLabel). Our modules have no material, so
+-- we collapse it and reclaim the space: a small Tech-level column, then Stock, then a WIDE Price
+-- column so large prices fit at the normal font 14. Each entry is {originalLocalLeft, targetLocalLeft,
+-- targetLocalRight} in the tab's LOCAL coordinate space. We reposition by the local delta applied to
+-- the label's absolute position (the window offset cancels) — Avorion only exposes absolute
+-- position/size as writable; local* are read-only. Values come from vanilla buildGui's column maths
+-- for showAmountBoxes + hideMaterialLabel (materialX=410, stockX=520, priceX=550, amountBoxX-20=630).
+local REF_TECH  = {410, 410, 455}
+local REF_STOCK = {520, 462, 512}
+local REF_PRICE = {550, 516, 630}
 
 -- ────────────────────────────────────────────────────────────────
 -- Station identity
@@ -110,21 +114,23 @@ function OmniHubSupplier.initUI()
     -- Reflow the Buy-tab columns: collapse the (unused) material column into a compact Tech-level
     -- column, then Stock, then a WIDE Price column so large module prices fit at the normal font.
     -- We move the data labels per line plus the two reachable headers (# and ¢) so headers stay aligned.
-    local function setCol(el, bounds)
+    -- Shift the label's box by the LOCAL delta (target - original) applied to its current ABSOLUTE
+    -- position, then resize to the target width. Keeps everything inside the window.
+    local function reflowCol(el, ref)
         if not el then return end
-        local p, s = el.position, el.size
-        el.position = vec2(bounds[1], p.y)
-        el.size     = vec2(bounds[2] - bounds[1], s.y)
+        local p = el.position
+        el.position = vec2(p.x + (ref[2] - ref[1]), p.y)
+        el.size     = vec2(ref[3] - ref[2], el.size.y)
     end
     for _, line in pairs(OmniHubSupplier.shop.soldItemLines) do
-        setCol(line.techLabel,  COL_TECH)
-        setCol(line.stockLabel, COL_STOCK)
-        setCol(line.priceLabel, COL_PRICE)
+        reflowCol(line.techLabel,  REF_TECH)
+        reflowCol(line.stockLabel, REF_STOCK)
+        reflowCol(line.priceLabel, REF_PRICE)
     end
-    setCol(OmniHubSupplier.shop.buyHeadlineAmountLabel, COL_STOCK)  -- the "#" header
-    setCol(OmniHubSupplier.shop.currencyLabel,          COL_PRICE)  -- the "¢" header
+    reflowCol(OmniHubSupplier.shop.buyHeadlineAmountLabel, REF_STOCK)  -- the "#" header
+    reflowCol(OmniHubSupplier.shop.currencyLabel,          REF_PRICE)  -- the "¢" header
     if OmniHubSupplier.shop.specialOfferUI then
-        setCol(OmniHubSupplier.shop.specialOfferUI.priceLabel, COL_PRICE)  -- special offer price too
+        reflowCol(OmniHubSupplier.shop.specialOfferUI.priceLabel, REF_PRICE)  -- special offer price
     end
 
     -- Dev-mode-only: a button to force a restock (re-roll subset + special offer) without waiting
