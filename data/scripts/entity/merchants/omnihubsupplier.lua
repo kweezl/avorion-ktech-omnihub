@@ -89,6 +89,35 @@ function OmniHubSupplier.initUI()
     -- Supplier only sells modules to the player — hide the Sell/Buyback tabs.
     OmniHubSupplier.shop.tabbedWindow:deactivateTab(OmniHubSupplier.shop.sellTab)
     OmniHubSupplier.shop.tabbedWindow:deactivateTab(OmniHubSupplier.shop.buyBackTab)
+
+    -- Dev-mode-only: a button to force a restock (re-roll subset + special offer) without waiting
+    -- for the ~20-min special-offer timer. Created on the Buy tab; bound to a namespace callback.
+    if GameSettings().devMode then
+        local tab  = OmniHubSupplier.shop.buyTab
+        local size = tab.size
+        OmniHubSupplier.refreshButton = tab:createButton(
+            Rect(size.x - 170, size.y - 40, size.x - 10, size.y - 12),
+            "Refresh Stock"%_t, "onRefreshStockPressed")
+        OmniHubSupplier.refreshButton.maxTextSize = 14
+    end
 end
+
+-- ────────────────────────────────────────────────────────────────
+-- Dev-only Refresh Stock (dev mode gated on BOTH sides)
+-- ────────────────────────────────────────────────────────────────
+
+-- Client: the Buy-tab button callback. Resolved by name on the OmniHubSupplier namespace.
+function OmniHubSupplier.onRefreshStockPressed()
+    if not GameSettings().devMode then return end
+    invokeServerFunction("omniRefreshStock")
+end
+
+-- Server: re-roll the shop stock and broadcast it to clients.
+function OmniHubSupplier.omniRefreshStock()
+    if not onServer() then return end
+    if not GameSettings().devMode then return end
+    OmniHubSupplier.shop:restock()  -- restock() re-runs addItems + broadcasts the new items
+end
+callable(OmniHubSupplier, "omniRefreshStock")
 
 return OmniHubSupplier
