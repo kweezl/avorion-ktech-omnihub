@@ -1,0 +1,7 @@
+{
+  "env": {
+    "AVORION_DATA_DIR": "C:/Path/To/SteamLibrary/steamapps/common/Avorion/data",
+    "AVORION_MODS_DIR": "C:/Users/YOUR_USERNAME/AppData/Roaming/Avorion/mods",
+    "LUA_DIR": "C:/Path/To/lua-5.4"
+  }
+}

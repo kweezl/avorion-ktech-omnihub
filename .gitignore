@@ -2,4 +2,5 @@
 *.iml
 __pycache__/
 img.png
+.claude/settings.json
 .claude/settings.local.json
