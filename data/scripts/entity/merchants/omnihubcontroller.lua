@@ -82,6 +82,31 @@ function OmniHub.onBlockPlanChanged(delta)
 end
 
 -- ────────────────────────────────────────────────────────────────
+-- Loot drops on destruction
+-- ────────────────────────────────────────────────────────────────
+
+function OmniHub.onDestroyed(lastDamageInflictor)
+    if not onServer() then return end
+
+    local dropChance = OmniHubConfig.get("dropChance")
+    local rng        = random()
+    local loot       = Loot(Entity().id)
+
+    for key, count in pairs(installed) do
+        for _ = 1, count do
+            if rng:test(dropChance) then
+                local item = UsableInventoryItem(
+                    "data/scripts/items/omnihubmodule.lua",
+                    Rarity(RarityType.Common),
+                    key
+                )
+                loot:insert(item)
+            end
+        end
+    end
+end
+
+-- ────────────────────────────────────────────────────────────────
 -- Persistence
 -- ────────────────────────────────────────────────────────────────
 function OmniHub.secure()
