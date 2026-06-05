@@ -199,7 +199,7 @@ end
 function OmniHubSupplier.shop:updateSellGui()
     if not self.guiInitialized then return end
 
-    for _, line in pairs(self.soldItemLines) do line:hide() end
+    for _, line in pairs(self.soldItemLines) do line:hide(); line.item = nil end
     if self.specialOfferUI then self.specialOfferUI:toSoldOut() end
 
     local faction = Faction()
@@ -226,6 +226,7 @@ function OmniHubSupplier.shop:updateSellGui()
         if item == nil then break end
         local line = self.soldItemLines[uiIndex]
         line:show()
+        line.item = item  -- bind the paged item so renderUI shows the right tooltip on hover
 
         line.nameLabel.caption = moduleDisplayName(item)%_t
         line.nameLabel.color = item.rarity.color
@@ -313,6 +314,34 @@ function OmniHubSupplier.shop:updateSellGui()
         else
             specialUI.button.active = true
             specialUI.button.tooltip = nil
+        end
+    end
+end
+
+-- Paged hover tooltips. Vanilla Shop:renderUI shows self.soldItems[i] for line i — i.e. it assumes
+-- line i always holds the i-th sold item (page 0). With pagination, line i holds soldItems[page*N+i],
+-- so vanilla shows page-1 tooltips on every page. Use the per-line item we bind in updateSellGui
+-- instead. Only the Buy tab is reachable (Sell/Buyback are deactivated), so we handle just that.
+function OmniHubSupplier.shop:renderUI()
+    if not self.tabbedWindow.mouseOver then return end
+    if self.tabbedWindow:getActiveTab().index ~= self.buyTab.index then return end
+
+    local mouse = Mouse().position
+
+    for _, line in pairs(self.soldItemLines) do
+        local item = line.item
+        if item ~= nil and line.frame.visible then
+            local l, u = line.frame.lower, line.frame.upper
+            if mouse.x >= l.x and mouse.x <= u.x and mouse.y >= l.y and mouse.y <= u.y then
+                TooltipRenderer(item:getTooltip()):drawMouseTooltip(mouse)
+            end
+        end
+    end
+
+    if self.specialOffer.item and self.specialOfferUI then
+        local l, u = self.specialOfferUI.frame.lower, self.specialOfferUI.frame.upper
+        if mouse.x >= l.x and mouse.x <= u.x and mouse.y >= l.y and mouse.y <= u.y then
+            TooltipRenderer(self.specialOffer.item:getTooltip()):drawMouseTooltip(mouse)
         end
     end
 end
