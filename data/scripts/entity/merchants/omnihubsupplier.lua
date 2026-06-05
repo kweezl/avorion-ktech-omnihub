@@ -147,6 +147,14 @@ function OmniHubSupplier.onNextPagePressed()
     shop:updateSellGui()
 end
 
+-- Reset to the first page each time the shop window opens. Vanilla onShowWindow resets the Sell
+-- tab's page but knows nothing about our Buy-tab pager, so reopening could land on a stale page.
+local base_onShowWindow = OmniHubSupplier.shop.onShowWindow
+function OmniHubSupplier.shop:onShowWindow(...)
+    self.soldItemsPage = 0
+    return base_onShowWindow(self, ...)
+end
+
 -- Paged replacement for Shop:updateSellGui. Renders only the current page of soldItems onto the
 -- fixed soldItemLines, plus the pager controls. Mirrors the vanilla per-line population, but maps
 -- the page slice onto lines 1..itemsPerPage. Special offer (specialOfferUI) is left to vanilla,
