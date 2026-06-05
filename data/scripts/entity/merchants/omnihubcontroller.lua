@@ -6,6 +6,7 @@ include("callable")
 include("productions")
 include("goods")
 local TradingAPI = include("tradingmanager")  -- exposes TradingAPI global
+local TradingUtility = include("tradingutility")
 local OmniHubConfig = include("lib/omnihub/config")
 local OmniHubModuleDefs = include("lib/omnihub/moduledefs")
 local Dialog = include("dialogutility")
@@ -114,6 +115,7 @@ function OmniHub.secure()
     data.installed          = installed
     data.productionProgress = productionProgress
     data.traderCooldown     = OmniHub.traderCooldown
+    data.tradingData        = OmniHub.secureTradingGoods()
     return data
 end
 
@@ -122,9 +124,8 @@ function OmniHub.restore(data)
     installed              = data.installed          or {}
     productionProgress     = data.productionProgress or {}
     OmniHub.traderCooldown = data.traderCooldown     or 0
-    if onServer() then
-        OmniHub.rebuild()
-    end
+    if data.tradingData then OmniHub.restoreTradingGoods(data.tradingData) end
+    if onServer() then OmniHub.rebuild() end
 end
 
 -- ────────────────────────────────────────────────────────────────
@@ -256,63 +257,69 @@ end
 function OmniHub.rebuild()
     if not onServer() then return end
 
-    local ingredientMap = {}
-    local resultMap     = {}
-    local garbageMap    = {}
-    local hasAny        = false
+    -- ingredient/result/garbage accumulation (amounts summed across all installed modules)
+    local ingAmounts  = {}  -- { [name] = totalAmount }
+    local ingOptional = {}  -- { [name] = optional flag (0 or 1) }
+    local resAmounts  = {}  -- { [name] = totalAmount }
+    local garAmounts  = {}  -- { [name] = totalAmount }
+    local hasAny      = false
 
     for key, count in pairs(installed) do
         local prod = OmniHubModuleDefs.resolveRecipe(key)
         if prod then
             hasAny = true
-
             for _, ing in pairs(prod.ingredients) do
-                local entry = ingredientMap[ing.name]
-                if not entry then
-                    ingredientMap[ing.name] = {name = ing.name, amount = ing.amount * count, optional = ing.optional}
-                else
-                    entry.amount = entry.amount + ing.amount * count
-                end
+                ingAmounts[ing.name]  = (ingAmounts[ing.name] or 0) + ing.amount * count
+                if ingOptional[ing.name] == nil then ingOptional[ing.name] = ing.optional end
             end
-
             for _, res in pairs(prod.results) do
-                local entry = resultMap[res.name]
-                if not entry then
-                    resultMap[res.name] = {name = res.name, amount = res.amount * count}
-                else
-                    entry.amount = entry.amount + res.amount * count
-                end
+                resAmounts[res.name] = (resAmounts[res.name] or 0) + res.amount * count
             end
-
             if prod.garbages then
                 for _, gar in pairs(prod.garbages) do
-                    local entry = garbageMap[gar.name]
-                    if not entry then
-                        garbageMap[gar.name] = {name = gar.name, amount = gar.amount * count}
-                    else
-                        entry.amount = entry.amount + gar.amount * count
-                    end
+                    garAmounts[gar.name] = (garAmounts[gar.name] or 0) + gar.amount * count
                 end
             end
         end
     end
 
+    -- Build TradingGood arrays for initializeTrading
     local bought = {}
     local sold   = {}
-    for _, v in pairs(ingredientMap) do bought[#bought + 1] = v end
-    for _, v in pairs(resultMap)     do sold[#sold + 1]     = v end
-    for _, v in pairs(garbageMap)    do sold[#sold + 1]     = v end
+    for name in pairs(ingAmounts) do
+        local g = goods[name]
+        if g then bought[#bought + 1] = g:good() end
+    end
+    for name in pairs(resAmounts) do
+        local g = goods[name]
+        if g then sold[#sold + 1] = g:good() end
+    end
+    for name in pairs(garAmounts) do
+        local g = goods[name]
+        if g then sold[#sold + 1] = g:good() end
+    end
 
     OmniHub.initializeTrading(bought, sold)
 
+    -- Build aggregatedProduction for requestTraders (mirrors factory.lua `production` structure)
     if hasAny then
+        local aggIngredients = {}
+        local aggResults     = {}
+        local aggGarbages    = {}
+        for name, amount in pairs(ingAmounts) do
+            aggIngredients[#aggIngredients + 1] = {name = name, amount = amount, optional = ingOptional[name] or 0}
+        end
+        for name, amount in pairs(resAmounts) do
+            aggResults[#aggResults + 1] = {name = name, amount = amount}
+        end
+        for name, amount in pairs(garAmounts) do
+            aggGarbages[#aggGarbages + 1] = {name = name, amount = amount}
+        end
         aggregatedProduction = {
-            ingredients = bought,
-            results     = {},
-            garbages    = {},
+            ingredients = aggIngredients,
+            results     = aggResults,
+            garbages    = aggGarbages,
         }
-        for _, v in pairs(resultMap)  do aggregatedProduction.results[#aggregatedProduction.results + 1]   = v end
-        for _, v in pairs(garbageMap) do aggregatedProduction.garbages[#aggregatedProduction.garbages + 1] = v end
     else
         aggregatedProduction = nil
     end
@@ -472,22 +479,20 @@ function OmniHub.sendModuleDataTo(player)
     end
     table.sort(installedList, function(a, b) return a.name < b.name end)
 
+    -- Build list of OmniHub modules in player inventory
     local inventory     = player:getInventory()
     local inventoryList = {}
-    for i = 0, inventory.maxSlots - 1 do
-        if not inventory:slotEmpty(i) then
-            local invItem = inventory:find(i)
-            if invItem and invItem.itemType == InventoryItemType.UsableItem then
-                if invItem:getValue("subtype") == "OmniHubModule" then
-                    local ikey = invItem:getValue("moduleKey")
-                    local def  = OmniHubModuleDefs.get(ikey)
-                    inventoryList[#inventoryList + 1] = {
-                        slotIndex = i,
-                        key       = ikey,
-                        name      = def and def.name or ikey,
-                    }
-                end
-            end
+    local invSlots = inventory:getItemsByType(InventoryItemType.UsableItem)
+    for slotIndex, slot in pairs(invSlots) do
+        local invItem = slot.item
+        if invItem and invItem:getValue("subtype") == "OmniHubModule" then
+            local ikey = invItem:getValue("moduleKey")
+            local def  = OmniHubModuleDefs.get(ikey)
+            inventoryList[#inventoryList + 1] = {
+                slotIndex = slotIndex,
+                key       = ikey,
+                name      = def and def.name or ikey,
+            }
         end
     end
 
@@ -578,6 +583,7 @@ function OmniHub.buildProductionTab(tab, windowSize)
 end
 
 function OmniHub.refreshManageUI()
+    OmniHub._btnKey = {}   -- clear stale button→key mappings
     if not manageInstalledFrame then return end
 
     -- Hide and clear installed rows

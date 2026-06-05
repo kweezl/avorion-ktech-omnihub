@@ -28,12 +28,15 @@ function OmniHubSupplier.initialize()
         entity.title = "OmniHub Supplier"%_t
         InteractionText(entity.index).text = Dialog.generateStationInteractionText(entity, random())
     end
+    if onServer() then
+        OmniHubSupplier.shop:initialize("OmniHub Supplier"%_t)
+    end
 end
 
 -- ────────────────────────────────────────────────────────────────
 -- Module shop — ShopAPI calls this to populate the shop shelf
 -- ────────────────────────────────────────────────────────────────
-function OmniHubSupplier.addItems()
+function OmniHubSupplier.shop:addItems()
     local priceFactor = OmniHubConfig.get("modulePriceFactor")
     local catalog     = OmniHubModuleDefs.getCatalog()
 
@@ -44,7 +47,7 @@ function OmniHubSupplier.addItems()
             key
         )
         item.price = math.ceil(def.price * priceFactor)
-        OmniHubSupplier.shop:add(item, 99)
+        self:add(item, 99)
     end
 end
 
