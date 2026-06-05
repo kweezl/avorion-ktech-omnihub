@@ -9,6 +9,7 @@ local TradingAPI = include("tradingmanager")  -- exposes TradingAPI global
 local TradingUtility = include("tradingutility")
 local OmniHubConfig = include("lib/omnihub/config")
 local OmniHubModuleDefs = include("lib/omnihub/moduledefs")
+local OmniHubProduction = include("lib/omnihub/production")
 local Dialog = include("dialogutility")
 
 -- Don't remove or alter the following comment, it tells the game the namespace this script lives in.
@@ -132,7 +133,10 @@ end
 -- Update loop (production + trader spawning)
 -- ────────────────────────────────────────────────────────────────
 function OmniHub.getUpdateInterval()
-    return Sector().numPlayers > 0 and 1 or 5
+    -- numPlayers is a server-only Sector property; reading it on the client
+    -- yields nil ("not readable") and crashes every tick. Gate the read.
+    if onServer() and Sector().numPlayers > 0 then return 1 end
+    return 5
 end
 
 function OmniHub.update(timeStep)
@@ -177,77 +181,33 @@ function OmniHub.tickRecipe(key, count, timeStep)
         return
     end
 
-    -- Try to start a new cycle
-    local entity     = Entity()
-    local canProduce = true
-    local boosted    = false
+    -- Try to start a new cycle. The affordability decision is pure (OmniHubProduction.canStartCycle);
+    -- the engine reads are wired in through the query table, and ingredient consumption stays here.
+    local entity = Entity()
+    local query  = {
+        getNumGoods    = function(name) return OmniHub.getNumGoods(name) end,
+        getGoodSize    = function(name) return OmniHub.getGoodSize(name) end,
+        getMaxStock    = function(name, size) return OmniHub.getMaxStock({name = name, size = size}) end,
+        freeCargoSpace = entity.freeCargoSpace,
+    }
+
+    local decision = OmniHubProduction.canStartCycle(prod, count, query)
+    if not decision.canProduce then return end
 
     for _, ing in pairs(prod.ingredients) do
-        local need = ing.amount * count
-        local have = OmniHub.getNumGoods(ing.name)
-        if ing.optional == 0 and have < need then
-            canProduce = false
-            break
-        end
-        if ing.optional == 1 and have >= need then
-            boosted = true
-        end
+        OmniHub.decreaseGoods(ing.name, ing.amount * count)
     end
 
-    if not canProduce then return end
-
-    for _, res in pairs(prod.results) do
-        local size     = OmniHub.getGoodSize(res.name)
-        local newAmt   = OmniHub.getNumGoods(res.name) + res.amount * count
-        local maxStock = OmniHub.getMaxStock({name = res.name, size = size})
-        if newAmt > maxStock or entity.freeCargoSpace < res.amount * count * size then
-            canProduce = false
-            break
-        end
-    end
-
-    if not canProduce then return end
-
-    for _, ing in pairs(prod.ingredients) do
-        local removed = OmniHub.decreaseGoods(ing.name, ing.amount * count)
-        if ing.optional == 1 and removed then
-            boosted = true
-        end
-    end
-
-    productionProgress[key] = {progress = 0, boosted = boosted}
+    productionProgress[key] = {progress = 0, boosted = decision.boosted}
 end
 
 function OmniHub.computeTimeToProduce(key)
-    local prod = OmniHubModuleDefs.resolveRecipe(key)
-    if not prod then return MIN_TIME_TO_PRODUCE end
-
-    local totalValue = 0
-    local totalLevel = 0
-    local samples    = 0
-
-    local function accumulate(name, amount)
-        local g = goods[name]
-        if g then
-            totalValue = totalValue + g.price * amount
-            totalLevel = totalLevel + (g.level or 0)
-            samples    = samples + 1
-        end
-    end
-
-    for _, res in pairs(prod.results) do
-        accumulate(res.name, res.amount)
-    end
-    if prod.garbages then
-        for _, gar in pairs(prod.garbages) do
-            accumulate(gar.name, gar.amount)
-        end
-    end
-
-    local avgLevel   = samples > 0 and (totalLevel / samples) or 0
-    local levelBonus = 1 + avgLevel / 100
-    local cap        = math.max(1, OmniHub.productionCapacity or 1)
-    return math.max(MIN_TIME_TO_PRODUCE, totalValue / cap / levelBonus)
+    return OmniHubProduction.timeToProduce(
+        OmniHubModuleDefs.resolveRecipe(key),
+        goods,
+        OmniHub.productionCapacity,
+        MIN_TIME_TO_PRODUCE
+    )
 end
 
 -- ────────────────────────────────────────────────────────────────
@@ -257,72 +217,28 @@ end
 function OmniHub.rebuild()
     if not onServer() then return end
 
-    -- ingredient/result/garbage accumulation (amounts summed across all installed modules)
-    local ingAmounts  = {}  -- { [name] = totalAmount }
-    local ingOptional = {}  -- { [name] = optional flag (0 or 1) }
-    local resAmounts  = {}  -- { [name] = totalAmount }
-    local garAmounts  = {}  -- { [name] = totalAmount }
-    local hasAny      = false
+    -- Pure aggregation of all installed recipes (summed amounts + merged aggregatedProduction).
+    local agg = OmniHubProduction.aggregate(installed, OmniHubModuleDefs.resolveRecipe)
 
-    for key, count in pairs(installed) do
-        local prod = OmniHubModuleDefs.resolveRecipe(key)
-        if prod then
-            hasAny = true
-            for _, ing in pairs(prod.ingredients) do
-                ingAmounts[ing.name]  = (ingAmounts[ing.name] or 0) + ing.amount * count
-                if ingOptional[ing.name] == nil then ingOptional[ing.name] = ing.optional end
-            end
-            for _, res in pairs(prod.results) do
-                resAmounts[res.name] = (resAmounts[res.name] or 0) + res.amount * count
-            end
-            if prod.garbages then
-                for _, gar in pairs(prod.garbages) do
-                    garAmounts[gar.name] = (garAmounts[gar.name] or 0) + gar.amount * count
-                end
-            end
-        end
-    end
-
-    -- Build TradingGood arrays for initializeTrading
+    -- Build TradingGood arrays for initializeTrading (engine-side: needs goods:good()).
     local bought = {}
     local sold   = {}
-    for name in pairs(ingAmounts) do
+    for name in pairs(agg.ingAmounts) do
         local g = goods[name]
         if g then bought[#bought + 1] = g:good() end
     end
-    for name in pairs(resAmounts) do
+    for name in pairs(agg.resAmounts) do
         local g = goods[name]
         if g then sold[#sold + 1] = g:good() end
     end
-    for name in pairs(garAmounts) do
+    for name in pairs(agg.garAmounts) do
         local g = goods[name]
         if g then sold[#sold + 1] = g:good() end
     end
 
     OmniHub.initializeTrading(bought, sold)
 
-    -- Build aggregatedProduction for requestTraders (mirrors factory.lua `production` structure)
-    if hasAny then
-        local aggIngredients = {}
-        local aggResults     = {}
-        local aggGarbages    = {}
-        for name, amount in pairs(ingAmounts) do
-            aggIngredients[#aggIngredients + 1] = {name = name, amount = amount, optional = ingOptional[name] or 0}
-        end
-        for name, amount in pairs(resAmounts) do
-            aggResults[#aggResults + 1] = {name = name, amount = amount}
-        end
-        for name, amount in pairs(garAmounts) do
-            aggGarbages[#aggGarbages + 1] = {name = name, amount = amount}
-        end
-        aggregatedProduction = {
-            ingredients = aggIngredients,
-            results     = aggResults,
-            garbages    = aggGarbages,
-        }
-    else
-        aggregatedProduction = nil
-    end
+    aggregatedProduction = agg.aggregatedProduction
 
     for key in pairs(installed) do
         timeToProduce[key] = OmniHub.computeTimeToProduce(key)
@@ -372,7 +288,7 @@ end
 
 -- Mirrors factory.lua:1893
 function OmniHub.getSellerProbability()
-    return lerp(OmniHub.trader.buyPriceFactor, 0.8, 1.2, 0.1, 0.9)
+    return OmniHubProduction.sellerProbability(OmniHub.trader.buyPriceFactor)
 end
 
 -- Mirrors factory.lua:1898
@@ -500,12 +416,45 @@ function OmniHub.sendModuleDataTo(player)
 end
 
 -- ────────────────────────────────────────────────────────────────
+-- Dev-mode test runner (server-side)
+-- ────────────────────────────────────────────────────────────────
+
+-- Runs a test category ("pure" | "integration" | "all") against this live station, echoes a
+-- summary to the server log and the requesting player's chat, and ships the per-test results
+-- back to the client for display in the Tests tab. Gated on dev mode.
+function OmniHub.runTests(category)
+    if not onServer() then return end
+    if not GameSettings().devMode then return end
+
+    category = category or "all"
+
+    local registry = include("lib/omnihub/tests/registry")
+    local runner   = registry.run(category)
+    local summary  = runner:summary()
+
+    -- Server log (full report).
+    print("[OmniHub] tests (" .. category .. "): "
+        .. summary.passed .. " passed, " .. summary.failed .. " failed of " .. summary.total)
+    print(runner:format())
+
+    local player = Player(callingPlayer)
+    if player then
+        local msgType = (summary.failed == 0) and ChatMessageType.Information or ChatMessageType.Error
+        player:sendChatMessage("OmniHub"%_t, msgType,
+            "Tests (%1%): %2% passed, %3% failed"%_t, category, summary.passed, summary.failed)
+        invokeClientFunction(player, "receiveTestResults", summary.results, category)
+    end
+end
+callable(OmniHub, "runTests")
+
+-- ────────────────────────────────────────────────────────────────
 -- Client-side UI handles (module-local, not persisted)
 -- ────────────────────────────────────────────────────────────────
 local window        = nil
 local tabbedWindow  = nil
 local manageTab     = nil
 local productionTab = nil
+local testsTab      = nil
 
 -- Manage tab UI state
 local manageInstalledFrame = nil
@@ -517,9 +466,14 @@ local manageInventoryRows  = {}
 local prodFrame = nil
 local prodRows  = {}
 
+-- Tests tab UI state (dev mode only)
+local testsResultFrame = nil
+local testsRows        = {}
+
 -- Cached server data (client-side)
 OmniHub.lastInstalledList = {}
 OmniHub.lastInventoryList = {}
+OmniHub.lastTestResults   = {}
 
 -- ────────────────────────────────────────────────────────────────
 -- UI
@@ -541,6 +495,13 @@ function OmniHub.initUI()
 
     OmniHub.buildManageTab(manageTab, size)
     OmniHub.buildProductionTab(productionTab, size)
+
+    -- Dev-mode-only Tests tab. (F4's entitydbg.lua can't be cleanly extended, so the test
+    -- runner lives in our own window instead.)
+    if GameSettings().devMode then
+        testsTab = tabbedWindow:createTab("Tests"%_t, "", "Run dev-mode tests"%_t)
+        OmniHub.buildTestsTab(testsTab, size)
+    end
 end
 
 function OmniHub.onShowWindow()
@@ -580,6 +541,33 @@ function OmniHub.buildProductionTab(tab, windowSize)
         Rect(vec2(padding, padding), size - vec2(padding, padding))
     )
     prodFrame.scrollSpeed = 30
+end
+
+function OmniHub.buildTestsTab(tab, windowSize)
+    local padding = 10
+    local size    = vec2(windowSize.x - 20, windowSize.y - 60)
+
+    -- Three run buttons across the top.
+    local btnH = 30
+    local btnW = math.floor((size.x - padding * 2) / 3)
+    local defs = {
+        { caption = "Run All"%_t,         func = "onRunAllTestsPress" },
+        { caption = "Run Pure"%_t,        func = "onRunPureTestsPress" },
+        { caption = "Run Integration"%_t, func = "onRunIntegrationTestsPress" },
+    }
+    for i, d in ipairs(defs) do
+        local x   = (i - 1) * btnW
+        local btn = tab:createButton(Rect(vec2(x, 0), vec2(x + btnW, btnH)), d.caption, d.func)
+        btn.uppercase = false
+    end
+
+    -- Results frame below the buttons.
+    local top = btnH + padding
+    tab:createFrame(Rect(vec2(0, top), size))
+    testsResultFrame = tab:createScrollFrame(
+        Rect(vec2(padding, top + padding), size - vec2(padding, padding))
+    )
+    testsResultFrame.scrollSpeed = 30
 end
 
 function OmniHub.refreshManageUI()
@@ -721,6 +709,70 @@ function OmniHub.receiveModuleData(installedList, inventoryList)
     OmniHub.lastInventoryList = inventoryList or {}
     OmniHub.refreshManageUI()
     OmniHub.refreshProductionUI()
+end
+
+-- ────────────────────────────────────────────────────────────────
+-- Tests tab (client) — buttons request a server run; results render here
+-- ────────────────────────────────────────────────────────────────
+
+function OmniHub.onRunAllTestsPress(button)
+    invokeServerFunction("runTests", "all")
+end
+
+function OmniHub.onRunPureTestsPress(button)
+    invokeServerFunction("runTests", "pure")
+end
+
+function OmniHub.onRunIntegrationTestsPress(button)
+    invokeServerFunction("runTests", "integration")
+end
+
+function OmniHub.refreshTestsUI()
+    if not testsResultFrame then return end
+
+    for _, row in ipairs(testsRows) do
+        if row.label then row.label:hide() end
+    end
+    testsRows = {}
+
+    local rowH   = 22
+    local pad    = 4
+    local width  = testsResultFrame.size.x - pad * 2
+    local list   = OmniHub.lastTestResults or {}
+    local passed, failed = 0, 0
+
+    for i, r in ipairs(list) do
+        local y      = pad + (i - 1) * (rowH + 2)
+        local status = r.ok and "PASS" or "FAIL"
+        local text   = status .. "  " .. (r.suite or "") .. " :: " .. (r.name or "")
+        if not r.ok and r.err then text = text .. "  - " .. r.err end
+
+        local label = testsResultFrame:createLabel(vec2(pad, y), text, 12)
+        label.size  = vec2(width, rowH)
+        label:setLeftAligned()
+        if r.ok then
+            label.color = ColorRGB(0.5, 1.0, 0.5)
+            passed = passed + 1
+        else
+            label.color = ColorRGB(1.0, 0.5, 0.5)
+            failed = failed + 1
+        end
+        testsRows[#testsRows + 1] = {label = label}
+    end
+
+    local y       = pad + #list * (rowH + 2)
+    local sumText = passed .. " passed, " .. failed .. " failed, " .. #list .. " total"
+    local sumLabel = testsResultFrame:createLabel(vec2(pad, y), sumText, 13)
+    sumLabel.size = vec2(width, rowH)
+    sumLabel:setLeftAligned()
+    sumLabel.bold = true
+    testsRows[#testsRows + 1] = {label = sumLabel}
+end
+
+-- Called by the server after a test run.
+function OmniHub.receiveTestResults(results, category)
+    OmniHub.lastTestResults = results or {}
+    OmniHub.refreshTestsUI()
 end
 
 return OmniHub

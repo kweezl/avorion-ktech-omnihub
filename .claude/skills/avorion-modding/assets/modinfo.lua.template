@@ -1,0 +1,46 @@
+-- modinfo.lua — Avorion mod manifest
+-- Copy this file to your mod root, rename values, then delete these comments.
+--
+-- IMPORTANT: On Steam Workshop upload the engine overwrites meta.id with the
+-- numeric Workshop item ID. Keep the updated modinfo.lua in version control.
+-- All file and folder names in the mod tree must be ASCII-only for upload to work.
+
+meta = {
+    -- ── Identity ─────────────────────────────────────────────────────────────
+    id      = "avorion-omnihub",       -- Unique ID. Will be overwritten by Workshop ID on upload.
+    name    = "avorion-omnihub",       -- Internal name used in Mods() listing. Typically same as id.
+    version = "0.1.0",                 -- "major.minor.patch". Increment on every published update.
+    type    = "mod",                   -- "mod" or "factionpack"
+
+    -- ── Display ──────────────────────────────────────────────────────────────
+    title       = "Avorion OmniHub",
+    description = "A comprehensive overhaul mod for Avorion.",
+    authors     = { "YourNameHere" },
+    contact     = "discord: yourhandle#0000",
+
+    -- ── Scope flags ──────────────────────────────────────────────────────────
+    serverSideOnly   = false,   -- true = server-only; clients are notified but don't download scripts.
+                                -- Only safe when no scripts are attached to Player/Entity/Sector.
+    clientSideOnly   = false,   -- true = cosmetic/UI only; server ignores this mod entirely.
+    saveGameAltering = true,    -- true = warn player that removing the mod may corrupt saves.
+                                -- Set true if you use secure()/restore() to persist any data.
+
+    -- ── Dependencies ─────────────────────────────────────────────────────────
+    dependencies = {
+        -- The Avorion version range this mod was tested against.
+        -- Engine stamps the max version automatically on Workshop upload.
+        { id = "Avorion", min = "2.0", max = "2.1" },
+
+        -- Hard dependency: mod must be present and meet the version constraint.
+        -- { id = "SomeOtherMod", min = "1.0" },
+
+        -- Optional dependency: loads if present, absent is not an error.
+        -- { id = "ModConfigMenu", min = "1.0", optional = true },
+
+        -- Incompatible mod: player is warned and cannot enable both simultaneously.
+        -- { id = "ConflictingOverhaul", incompatible = true },
+
+        -- Incompatible at a specific version only:
+        -- { id = "BuggyMod", exact = "2.0", incompatible = true },
+    },
+}

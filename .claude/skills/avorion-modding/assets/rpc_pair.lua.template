@@ -1,0 +1,93 @@
+-- RPC (Remote Procedure Call) pair template for Avorion mods.
+-- Shows the canonical server ↔ client round-trip pattern using callable + invokeServerFunction.
+-- Replace "MyTab" with your namespace name.
+--
+-- How it works:
+--   1. The client calls MyTab.requestData() — perhaps from initUI() or a button click.
+--   2. invokeServerFunction routes it to the server's MyTab.serverFetchData().
+--   3. The server gathers data and calls invokeClientFunction to send it back.
+--   4. The client receives the response in MyTab.receiveData(payload).
+--
+-- ALL RPCs are async and fire-and-forget — no return value, no error callback.
+-- The round-trip is always two separate calls.
+
+package.path = package.path .. ";data/scripts/lib/?.lua"
+include("callable")
+include("stringutility")
+
+-- namespace MyTab
+MyTab = {}
+
+-- ── UI setup (client only) ────────────────────────────────────────────────────
+
+function MyTab.initUI()
+    -- Build your UI here. Request initial data immediately.
+    MyTab.statusLabel = nil   -- store widget refs as needed
+
+    -- playerWindow is injected by the engine when the player opens the entity window.
+    -- local tab = playerWindow:createTab("My Tab"%_t, "data/textures/icons/...", "Tooltip"%_t)
+    -- MyTab.statusLabel = tab:createLabel(...)
+
+    MyTab.requestData()   -- kick off the initial data fetch
+end
+
+-- ── Client → server ───────────────────────────────────────────────────────────
+
+-- Called from the client to request fresh data from the server.
+-- invokeServerFunction is fire-and-forget: it returns immediately on the client.
+-- The response arrives asynchronously in MyTab.receiveData().
+function MyTab.requestData()
+    invokeServerFunction("serverFetchData")
+end
+
+-- You can also pass arguments to the server:
+-- function MyTab.requestFiltered(filter)
+--     invokeServerFunction("serverFetchFiltered", filter)
+-- end
+
+-- ── Server → client (response) ────────────────────────────────────────────────
+
+-- Called on the CLIENT when the server sends back data.
+-- payload is a plain Lua table (no userdata).
+function MyTab.receiveData(payload)
+    if not MyTab.statusLabel then return end
+    -- update UI:
+    -- MyTab.statusLabel.caption = tostring(payload.count)
+end
+
+-- ── Server-side handler ───────────────────────────────────────────────────────
+
+-- This function runs on the SERVER when the client calls invokeServerFunction("serverFetchData").
+-- callingPlayer holds the integer index of the requesting player — wrap it in Player() each call.
+function MyTab.serverFetchData()
+    if not onServer() then return end
+
+    local player = Player(callingPlayer)   -- ALWAYS: Player(callingPlayer), not a cached reference
+
+    -- Gather data from the game world.
+    local payload = {
+        count    = Sector():getNumEntitiesByType(EntityType.Station),
+        sectorX  = Sector():getCoordinates(),
+    }
+
+    -- Send response back to the requesting client.
+    invokeClientFunction(player, "receiveData", payload)
+    -- To send to ALL players in the sector instead:
+    -- broadcastInvokeClientFunction("receiveData", payload)
+end
+
+-- callable() MUST be called at file scope (not inside initialize or any function).
+-- It registers serverFetchData as reachable via invokeServerFunction on the server,
+-- and on the client side replaces MyTab.serverFetchData with a transparent RPC stub.
+callable(MyTab, "serverFetchData")
+
+-- Add more callable functions as needed:
+-- function MyTab.serverSetConfig(value)
+--     if not onServer() then return end
+--     local player = Player(callingPlayer)
+--     Entity():setValue("mymod_config", tostring(value))
+-- end
+-- callable(MyTab, "serverSetConfig")
+
+-- ── Trailing return ───────────────────────────────────────────────────────────
+return MyTab

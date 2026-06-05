@@ -1,0 +1,98 @@
+-- Entity script template for Avorion mods.
+-- Replace every occurrence of "MyScript" with your chosen namespace name.
+-- The namespace name must match the "-- namespace" comment below exactly (case-sensitive).
+-- Delete comment blocks you don't need before shipping.
+
+package.path = package.path .. ";data/scripts/lib/?.lua"
+
+-- Include the helpers your script uses. callable is required if you expose RPC functions.
+-- stringutility is required if you use the %_t localization operator.
+include("callable")
+include("stringutility")
+include("utility")
+
+-- DO NOT remove or alter this comment. The C++ engine parses it to determine the script's VM.
+-- namespace MyScript
+MyScript = {}
+
+-- ── initialize ───────────────────────────────────────────────────────────────
+-- Called once on first attach (args = those passed to addScript("path", arg1, arg2, ...)).
+-- Also called on restore from disk, but WITHOUT arguments (_restoring = true).
+-- Guard first-time setup so it doesn't run again on load.
+function MyScript.initialize(arg1, arg2)
+    if _restoring then return end
+
+    -- First-time setup here.
+    MyScript.someValue = arg1 or 0
+
+    -- Register event callbacks (optional).
+    -- Replace "eventName" and "handlerFunctionName" with the desired event and handler.
+    -- See references/callbacks.md for the full list of event names.
+    -- Entity():registerCallback("onDestroyed", "onMyScriptDestroyed")
+end
+
+-- ── getUpdateInterval ────────────────────────────────────────────────────────
+-- Return seconds between update() calls. OMIT this function entirely if you
+-- don't need periodic updates — an empty update() still consumes CPU.
+function MyScript.getUpdateInterval()
+    return 1.0
+end
+
+-- ── update ───────────────────────────────────────────────────────────────────
+-- Called every getUpdateInterval() seconds. Runs on both server and client unless gated.
+function MyScript.update(timeStep)
+    if not onServer() then return end
+    -- Server-side periodic logic here.
+end
+
+-- ── interactionPossible ──────────────────────────────────────────────────────
+-- Called before the interaction window opens. Return false (+ optional error table) to block.
+-- Remove if this script has no interaction window.
+-- function MyScript.interactionPossible(playerIndex, option)
+--     return true
+-- end
+
+-- ── initUI ───────────────────────────────────────────────────────────────────
+-- Called on the CLIENT when the player first opens the interaction window.
+-- Remove if this script has no UI.
+-- function MyScript.initUI()
+--     -- playerWindow:createTab(...)
+-- end
+
+-- ── secure ───────────────────────────────────────────────────────────────────
+-- Called before save. Return a plain Lua table (no userdata, no functions).
+-- Nested tables are fine. Numbers, strings, booleans, nil are fine.
+function MyScript.secure()
+    return {
+        someValue = MyScript.someValue,
+    }
+end
+
+-- ── restore ──────────────────────────────────────────────────────────────────
+-- Called after initialize() on load. `data` is what secure() last returned.
+-- Use "or default" for backwards compatibility when adding new fields.
+function MyScript.restore(data)
+    MyScript.someValue = data.someValue or 0
+end
+
+-- ── Event handlers ───────────────────────────────────────────────────────────
+-- Uncomment and fill in for events registered in initialize().
+
+-- function MyScript.onMyScriptDestroyed(lastDamageInflictor)
+--     if not onServer() then return end
+-- end
+
+-- ── RPC: callable server functions ───────────────────────────────────────────
+-- Uncomment to expose a server function that clients can call via invokeServerFunction.
+-- callable() must be called at file scope (not inside initialize or any function).
+
+-- function MyScript.serverDoSomething()
+--     if not onServer() then return end
+--     local player = Player(callingPlayer)
+--     invokeClientFunction(player, "clientReceiveResult", {})
+-- end
+-- callable(MyScript, "serverDoSomething")
+
+-- ── Trailing return ───────────────────────────────────────────────────────────
+-- ALWAYS unconditional. Engine injects mod extensions immediately before this line.
+return MyScript

@@ -1,0 +1,86 @@
+-- Sector script template for Avorion mods.
+-- Replace every occurrence of "MySectorScript" with your chosen namespace name.
+-- Sector scripts run on both server and client; client-side state is lost on every sector change.
+
+package.path = package.path .. ";data/scripts/lib/?.lua"
+package.path = package.path .. ";data/scripts/?.lua"   -- needed for galaxy, sectorspecifics, etc.
+package.path = package.path .. ";?"                     -- catch-all for relative includes
+
+include("callable")
+include("stringutility")
+include("utility")
+include("randomext")
+
+-- See data/scripts/lib/ for other common includes:
+-- local Galaxy    = include("galaxy")
+-- local Placer    = include("placer")
+-- local ShipUtil  = include("shiputility")
+
+-- DO NOT remove or alter this comment. The C++ engine parses it to determine the script's VM.
+-- namespace MySectorScript
+MySectorScript = {}
+
+-- ── Server-only section ───────────────────────────────────────────────────────
+-- Most sector logic is server-side. Use Pattern B (block gate) or Pattern A (per-function gate).
+-- Pattern B — put all server functions inside this block:
+if onServer() then
+
+    function MySectorScript.initialize()
+        if _restoring then return end
+        -- First-time sector initialization.
+        -- Register sector-level callbacks here if needed.
+        -- Sector():registerCallback("onPlayerLogIn", "onPlayerLogIn")
+    end
+
+    function MySectorScript.getUpdateInterval()
+        return 10.0   -- check every 10 seconds
+    end
+
+    function MySectorScript.update(timeStep)
+        -- Server-side periodic sector logic.
+        -- local players = Sector():getPlayers()
+    end
+
+    function MySectorScript.secure()
+        return {
+            -- persist server state here
+        }
+    end
+
+    function MySectorScript.restore(data)
+        -- restore server state here
+    end
+
+    -- Event handler example:
+    -- function MySectorScript.onPlayerLogIn(playerIndex)
+    --     local player = Player(playerIndex)
+    -- end
+
+end  -- end onServer()
+
+-- ── Client-only section ───────────────────────────────────────────────────────
+-- Client scripts are re-initialized on every sector entry. Do not persist state here.
+-- Use this for sector-specific HUD overlays or visual feedback.
+if onClient() then
+
+    function MySectorScript.updateClient(timeStep)
+        -- Client-side visual update.
+    end
+
+    -- function MySectorScript.onPreRenderHud()
+    --     drawText(100, 100, "sector debug", ColorRGB(1, 1, 1))
+    -- end
+
+end  -- end onClient()
+
+-- ── RPC: callable server functions ───────────────────────────────────────────
+-- function MySectorScript.serverFetchData()
+--     if not onServer() then return end
+--     local player = Player(callingPlayer)
+--     invokeClientFunction(player, "clientReceiveData", {})
+-- end
+-- callable(MySectorScript, "serverFetchData")
+
+-- ── Trailing return ───────────────────────────────────────────────────────────
+-- Unconditional — must be the last line.
+return MySectorScript
