@@ -542,10 +542,14 @@ function OmniHub.buildManageTab(tab, windowSize)
     manageInventoryFrame.scrollSpeed = 30
 end
 
--- Placeholder — replaced in Task 9
-function OmniHub.buildProductionTab(tab, size)
-    local label = tab:createLabel(vec2(10, 10), "No factory modules installed."%_t, 14)
-    label.size  = vec2(size.x - 20, 20)
+function OmniHub.buildProductionTab(tab, windowSize)
+    local padding = 10
+    local size    = vec2(windowSize.x - 20, windowSize.y - 60)
+    tab:createFrame(Rect(vec2(0, 0), size))
+    prodFrame = tab:createScrollFrame(
+        Rect(vec2(padding, padding), size - vec2(padding, padding))
+    )
+    prodFrame.scrollSpeed = 30
 end
 
 function OmniHub.refreshManageUI()
@@ -638,7 +642,47 @@ function OmniHub.onUninstallButtonPress(button)
     end
 end
 
-function OmniHub.refreshProductionUI() end
+function OmniHub.refreshProductionUI()
+    if not prodFrame then return end
+
+    for _, row in ipairs(prodRows) do
+        if row.label  then row.label:hide()  end
+        if row.label2 then row.label2:hide() end
+    end
+    prodRows = {}
+
+    local rowH  = 40
+    local pad   = 5
+    local width = prodFrame.size.x - pad * 2
+    local list  = OmniHub.lastInstalledList
+
+    for i, entry in ipairs(list) do
+        local def  = OmniHubModuleDefs.get(entry.key)
+        local prod = def and OmniHubModuleDefs.resolveRecipe(entry.key)
+        if def and prod then
+            local y     = pad + (i - 1) * (rowH + pad)
+            local lower = vec2(pad, y)
+
+            -- Line 1: "FactoryName ×count"
+            local line1  = def.name .. " \xC3\x97" .. entry.count
+            local label1 = prodFrame:createLabel(lower, line1, 13)
+            label1.size  = vec2(width, 20)
+            label1:setLeftAligned()
+
+            -- Line 2: "Produces: Nx GoodName, ..."
+            local parts = {}
+            for _, res in pairs(prod.results) do
+                parts[#parts + 1] = (res.amount * entry.count) .. "\xC3\x97 " .. res.name%_t
+            end
+            local line2  = "Produces: "%_t .. table.concat(parts, ", ")
+            local label2 = prodFrame:createLabel(lower + vec2(0, 20), line2, 11)
+            label2.size  = vec2(width, 18)
+            label2:setLeftAligned()
+
+            prodRows[#prodRows + 1] = {label = label1, label2 = label2}
+        end
+    end
+end
 
 -- Called by server RPC response — stub until Task 6
 function OmniHub.receiveModuleData(installedList, inventoryList)
