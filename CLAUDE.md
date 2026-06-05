@@ -8,9 +8,9 @@ These are defined in `.claude/settings.json` and must be set before working on t
 
 | Variable            | Purpose                                                       | Suggested value                                              |
 |---------------------|---------------------------------------------------------------|--------------------------------------------------------------|
-| `AVORION_DATA_DIR`  | Avorion game data directory (scripts, assets, API reference) | `S:/SteamLibrary/steamapps/common/Avorion/data`              |
+| `AVORION_DATA_DIR`  | Avorion game data directory (scripts, assets, API reference) | `C:/Program Files (x86)/Steam/steamapps/common/Avorion/data` |
 | `AVORION_MODS_DIR`  | Avorion local mods directory where this mod is deployed       | `C:/Users/<username>/AppData/Roaming/Avorion/mods`           |
-| `LUA_DIR`           | Standalone Lua 5.4 install dir, used to run the off-engine tests (contains `lua54.exe`) | `D:/apps/lua-5.4.8` |
+| `LUA_DIR`           | Standalone Lua 5.4 install dir, used to run the off-engine tests (contains `lua54.exe`) | `C:/Path/To/lua-5.4` |
 
 ## Project Overview
 

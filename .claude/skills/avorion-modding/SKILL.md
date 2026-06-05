@@ -141,7 +141,7 @@ The engine concatenates all files with the same path (in dependency order) into 
 **First-time setup — Windows junction (run once in an admin terminal):**
 
 ```bat
-mklink /J "%APPDATA%\Avorion\mods\avorion-omnihub" "S:\github\avorion-omnihub"
+mklink /J "%APPDATA%\Avorion\mods\avorion-omnihub" "<path-to-repo>\avorion-omnihub"
 ```
 
 A directory junction (not a symlink) is used because junctions work without elevated UAC on Windows 10/11. The mod folder is now live-linked to the repo — edits in the repo are immediately visible to the game.
@@ -274,7 +274,7 @@ Copy `assets/rpc_pair.lua.template` for a fuller scaffold. RPCs are async and fi
 ### Deploy for the first time
 
 ```bat
-mklink /J "%APPDATA%\Avorion\mods\avorion-omnihub" "S:\github\avorion-omnihub"
+mklink /J "%APPDATA%\Avorion\mods\avorion-omnihub" "<path-to-repo>\avorion-omnihub"
 ```
 
 Then restart game and enable the mod.
@@ -307,4 +307,4 @@ The Avorion wiki pages for callbacks and the full scripting API are stubs — th
 $AVORION_DATA_DIR/../documentation/index.html
 ```
 
-On this machine: `S:/SteamLibrary/steamapps/common/Avorion/documentation/index.html`
+(Default Steam install: `C:/Program Files (x86)/Steam/steamapps/common/Avorion/documentation/index.html`)
