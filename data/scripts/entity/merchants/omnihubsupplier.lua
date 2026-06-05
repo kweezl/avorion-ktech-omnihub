@@ -196,6 +196,25 @@ function OmniHubSupplier.shop:receiveSoldItems(...)
     return base_receiveSoldItems(self, ...)
 end
 
+-- Resolve a module item's display name WITHOUT item:getName(). For UsableItems, the vanilla
+-- SellableInventoryItem:getName reads the tooltip's first line on the client — but our module items'
+-- tooltips don't survive the shop's network sync, so getName() throws ("Tooltip:getLine range_check")
+-- and aborts the whole render. Resolve from the stored moduleKey via the catalog (reliable in this
+-- entity VM), falling back to the plain name, then a constant.
+local function moduleDisplayName(item)
+    local inner = item and item.item
+    if inner and inner.getValue then
+        local ok, key = pcall(inner.getValue, inner, "moduleKey")
+        if ok and key and key ~= "" then
+            local def = OmniHubModuleDefs.get(key)
+            if def and def.name then return def.name end
+        end
+    end
+    local n = item and item.name
+    if n ~= nil and n ~= "" then return n end
+    return "OmniHub Module"
+end
+
 -- Paged replacement for Shop:updateSellGui. Renders only the current page of soldItems onto the
 -- fixed soldItemLines, plus the pager controls. Mirrors the vanilla per-line population, but maps
 -- the page slice onto lines 1..itemsPerPage. Special offer (specialOfferUI) is left to vanilla,
@@ -234,7 +253,7 @@ function OmniHubSupplier.shop:updateSellGui()
         local line = self.soldItemLines[uiIndex]
         line:show()
 
-        line.nameLabel.caption = item:getName()%_t
+        line.nameLabel.caption = moduleDisplayName(item)%_t
         line.nameLabel.color = item.rarity.color
         line.nameLabel.bold = false
 
@@ -293,7 +312,7 @@ function OmniHubSupplier.shop:updateSellGui()
     if offer and self.specialOfferUI then
         local specialUI = self.specialOfferUI
         specialUI:show()
-        specialUI.nameLabel.caption = offer.name%_t
+        specialUI.nameLabel.caption = moduleDisplayName(offer)%_t
         specialUI.nameLabel.color = offer.rarity.color
         specialUI.nameLabel.bold = false
         if offer.material then
