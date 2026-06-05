@@ -4,6 +4,7 @@ local OmniHubTest       = include("lib/omnihub/tests/framework")
 local OmniHubModuleDefs = include("lib/omnihub/moduledefs")
 local OmniHubProduction = include("lib/omnihub/production")
 local OmniHubConfig = include("lib/omnihub/config")
+local OmniHubSupplierStock = include("lib/omnihub/supplierstock")
 
 local tru   = OmniHubTest.assertTrue
 local eq    = OmniHubTest.assertEqual
@@ -112,5 +113,24 @@ return function(runner)
             eq(type(ns.shop[m]), "function", "shop:" .. m .. " exists")
         end
         notn(ns.shop.itemsPerPage, "shop.itemsPerPage exists")
+    end)
+
+    runner:test("real-catalog subset is distinct and resolvable", function()
+        local catalog = OmniHubModuleDefs.getCatalog()
+        local keys = {}
+        for k in pairs(catalog) do keys[#keys + 1] = k end
+        tru(#keys >= OmniHubConfig.get("sellingModuleCount"), "catalog has at least sellingModuleCount entries")
+
+        local i = 0
+        local rng = function(hi) i = i + 1; return ((i - 1) % hi) + 1 end
+        local subset = OmniHubSupplierStock.pickRandomSubset(keys, 10, rng)
+        eq(#subset, 10, "subset has 10 entries")
+
+        local seen = {}
+        for _, key in ipairs(subset) do
+            tru(not seen[key], "no duplicate: " .. tostring(key))
+            seen[key] = true
+            notn(OmniHubModuleDefs.get(key), "key resolves to a real def: " .. tostring(key))
+        end
     end)
 end
