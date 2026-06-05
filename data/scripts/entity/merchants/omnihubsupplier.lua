@@ -17,6 +17,14 @@ OmniHubSupplier = ShopAPI.CreateNamespace()
 local BUY_NO_PAGER_LIMIT = 14
 local BUY_PAGE_SIZE      = 12
 
+-- TEMP pager debug logging (dev mode only). Writes to the client/server log. Remove once the
+-- pagination bug is root-caused.
+local function dbg(fmt, ...)
+    if GameSettings().devMode then
+        print("[OmniHubSup] " .. string.format(fmt, ...))
+    end
+end
+
 -- ────────────────────────────────────────────────────────────────
 -- Station identity
 -- ────────────────────────────────────────────────────────────────
@@ -64,6 +72,9 @@ function OmniHubSupplier.shop:addItems()
     local rng      = makeRng()
     local subset   = OmniHubSupplierStock.pickRandomSubset(keys, count, rng)
     local offerKey = OmniHubSupplierStock.pickSpecialOffer(subset, rng)
+
+    dbg("addItems server=%s count=%d catalog=%d subset=%d stock=[%d,%d] offer=%s",
+        tostring(onServer()), count, #keys, #subset, stockMin, stockMax, tostring(offerKey))
 
     for _, key in ipairs(subset) do
         local def  = catalog[key]
@@ -121,6 +132,12 @@ function OmniHubSupplier.initUI()
     shop.pageLabelBuy   = tab:createLabel(vec2(150, size.y - 38), "", 14)
     shop.prevPageButton:hide()
     shop.nextPageButton:hide()
+
+    OmniHubSupplier._initCount = (OmniHubSupplier._initCount or 0) + 1
+    dbg("initUI #%d shop=%s buyTab=%s soldLines=%s prevBtn=%s label=%s",
+        OmniHubSupplier._initCount, tostring(shop), tostring(shop.buyTab),
+        tostring(shop.soldItemLines and #shop.soldItemLines), tostring(shop.prevPageButton),
+        tostring(shop.pageLabelBuy))
 end
 
 -- ────────────────────────────────────────────────────────────────
@@ -147,12 +164,16 @@ callable(OmniHubSupplier, "omniRefreshStock")
 
 function OmniHubSupplier.onPrevPagePressed()
     local shop = OmniHubSupplier.shop
+    dbg("PREV pressed shop=%s page %s -> %s", tostring(shop), tostring(shop.soldItemsPage),
+        tostring((shop.soldItemsPage or 0) - 1))
     shop.soldItemsPage = (shop.soldItemsPage or 0) - 1
     shop:updateSellGui()
 end
 
 function OmniHubSupplier.onNextPagePressed()
     local shop = OmniHubSupplier.shop
+    dbg("NEXT pressed shop=%s page %s -> %s", tostring(shop), tostring(shop.soldItemsPage),
+        tostring((shop.soldItemsPage or 0) + 1))
     shop.soldItemsPage = (shop.soldItemsPage or 0) + 1
     shop:updateSellGui()
 end
@@ -161,6 +182,7 @@ end
 -- tab's page but knows nothing about our Buy-tab pager, so reopening could land on a stale page.
 local base_onShowWindow = OmniHubSupplier.shop.onShowWindow
 function OmniHubSupplier.shop:onShowWindow(...)
+    dbg("onShowWindow shop=%s (reset page, was %s)", tostring(self), tostring(self.soldItemsPage))
     self.soldItemsPage = 0
     return base_onShowWindow(self, ...)
 end
@@ -169,6 +191,7 @@ end
 -- Stock), so the player isn't stranded on a now-out-of-range page.
 local base_receiveSoldItems = OmniHubSupplier.shop.receiveSoldItems
 function OmniHubSupplier.shop:receiveSoldItems(...)
+    dbg("receiveSoldItems shop=%s (RESET page->0, was %s)", tostring(self), tostring(self.soldItemsPage))
     self.soldItemsPage = 0
     return base_receiveSoldItems(self, ...)
 end
@@ -199,6 +222,9 @@ function OmniHubSupplier.shop:updateSellGui()
 
     local perPage = (total > BUY_NO_PAGER_LIMIT) and BUY_PAGE_SIZE or self.itemsPerPage
     local itemStart, itemEnd, page = OmniHubSupplierStock.pageSlice(total, perPage, self.soldItemsPage or 0)
+    dbg("updateSellGui shop=%s total=%d perPage=%d reqPage=%s -> page=%d range=%d-%d guiInit=%s label=%s",
+        tostring(self), total, perPage, tostring(self.soldItemsPage), page, itemStart, itemEnd,
+        tostring(self.guiInitialized), tostring(self.pageLabelBuy))
     self.soldItemsPage = page
 
     local uiIndex = 1
