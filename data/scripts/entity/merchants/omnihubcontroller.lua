@@ -698,11 +698,14 @@ function OmniHub.refreshProductionUI()
             label1:setLeftAligned()
 
             -- Line 2: "Produces: Nx GoodName, ..."
+            -- %_t is Avorion's string translation metamethod — EmmyLua can't model it.
+            ---@diagnostic disable: undefined-global
             local parts = {}
             for _, res in pairs(prod.results) do
                 parts[#parts + 1] = (res.amount * entry.count) .. "\xC3\x97 " .. res.name%_t
             end
             local line2  = "Produces: "%_t .. table.concat(parts, ", ")
+            ---@diagnostic enable: undefined-global
             local label2 = prodFrame:createLabel(lower + vec2(0, 20), line2, 11)
             label2.size  = vec2(width, 18)
             label2:setLeftAligned()
