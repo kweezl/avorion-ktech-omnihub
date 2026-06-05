@@ -57,13 +57,22 @@ Rationale for *optional* over *required*:
 - The four existing call sites (`OmniHubConfig.get("…")`) are unchanged.
 - MCM itself pulls in the Lua JSON Library as *its* dependency; we declare only MCM.
 
-### A.2 `modconfig.lua` (mod root, new) — MCM schema
+### A.2 `modconfig.lua` (mod root, new) — MCM schema (single source of truth via include)
 
 MCM auto-discovers a `modconfig.lua` next to `modinfo.lua` at startup and reads it to build the admin
-UI. It returns `{ pages = { ... } }`. **Defaults live in this schema.** All options are server-wide
-(admin-only) — none use `isClient`.
+UI. It returns `{ pages = { ... } }`. **The option schema is declared once in `config.lua` as
+`OmniHubConfig.schema`**, and `modconfig.lua` is a thin wrapper that includes it — so defaults/ranges/
+labels live in exactly one place and the runtime fallback can never drift from the MCM UI. (MCM
+supports `package.path`/`include` inside `modconfig.lua`, per its own keybind example.)
 
-Option set (one page, "OmniHub"):
+```lua
+-- modconfig.lua (mod root)
+package.path = package.path .. ";data/scripts/lib/?.lua"
+local OmniHubConfig = include("lib/omnihub/config")
+return { pages = { { title = "OmniHub", options = OmniHubConfig.schema } } }
+```
+
+All options are server-wide (admin-only) — none use `isClient`. Option set (one page, "OmniHub"):
 
 | key | MCM type | default | min / max | runtime meaning |
 |---|---|---|---|---|
@@ -78,11 +87,13 @@ Percentage representation: `dropChance` and `modulePriceFactor` are stored by MC
 fractional values they do today (0.5, 1.0). This conversion is the single source of truth for the
 "percent → fraction" mapping and is covered by tests.
 
-### A.3 `config.lua` — MCM-aware accessor
+### A.3 `config.lua` — schema owner + MCM-aware accessor
 
-`OmniHubConfig` keeps its `defaults` table (fallback + test oracle) and gains MCM awareness. The MCM
-module is resolved and bound **once at module load** (the pattern MCM's own docs use), then
-`get(key)` just delegates and applies the percent conversion:
+`OmniHubConfig` owns `OmniHubConfig.schema` (the single declared source above) and **derives**
+`OmniHubConfig.defaults` from it — converting the percent keys (`dropChance`, `modulePriceFactor`)
+to fractions (50→0.5, 100→1.0) so the no-MCM fallback and tests see the values callers expect. The
+MCM module is resolved and bound **once at module load** (the pattern MCM's own docs use), then
+`get(key)` delegates and applies the same percent conversion:
 
 ```lua
 -- pseudo-shape
