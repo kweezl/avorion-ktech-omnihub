@@ -5,7 +5,7 @@ include("callable")
 local ShopAPI = include("shop")
 local OmniHubConfig  = include("lib/omnihub/config")
 local OmniHubModuleDefs = include("lib/omnihub/moduledefs")
-local Dialog = include("dialogutility")
+local OmniHubSupplierStock = include("lib/omnihub/supplierstock")
 
 -- Don't remove or alter the following comment, it tells the game the namespace this script lives in.
 -- namespace OmniHubSupplier
@@ -26,28 +26,49 @@ function OmniHubSupplier.initialize()
     local entity = Entity()
     if entity.title == "" then
         entity.title = "OmniHub Supplier"%_t
-        InteractionText(entity.index).text = Dialog.generateStationInteractionText(entity, random())
     end
-    if onServer() then
-        OmniHubSupplier.shop:initialize("OmniHub Supplier"%_t)
-    end
+    OmniHubSupplier.shop:initialize("OmniHub Supplier"%_t)
 end
 
 -- ────────────────────────────────────────────────────────────────
 -- Module shop — ShopAPI calls this to populate the shop shelf
 -- ────────────────────────────────────────────────────────────────
+
+-- Build a Random-backed rng(hi) -> int in [1, hi]. A fresh random() each restock rotates the stock.
+local function makeRng()
+    local r = random()
+    return function(hi)
+        if hi < 1 then return 1 end
+        return r:getInt(1, hi)
+    end
+end
+
 function OmniHubSupplier.shop:addItems()
     local priceFactor = OmniHubConfig.get("modulePriceFactor")
+    local count       = OmniHubConfig.get("sellingModuleCount")
     local catalog     = OmniHubModuleDefs.getCatalog()
 
-    for key, def in pairs(catalog) do
+    -- Catalog keys as an array, so the pure picker can sample distinct entries.
+    local keys = {}
+    for key in pairs(catalog) do keys[#keys + 1] = key end
+
+    local rng     = makeRng()
+    local subset  = OmniHubSupplierStock.pickRandomSubset(keys, count, rng)
+    local offerKey = OmniHubSupplierStock.pickSpecialOffer(subset, rng)
+
+    for _, key in ipairs(subset) do
+        local def  = catalog[key]
         local item = UsableInventoryItem(
             "data/scripts/items/omnihubmodule.lua",
             Rarity(RarityType.Common),
             key
         )
         item.price = math.ceil(def.price * priceFactor)
-        self:add(item, 99)
+        if key == offerKey then
+            self:setSpecialOffer(item, 1)
+        else
+            self:add(item, 99)
+        end
     end
 end
 
@@ -63,7 +84,7 @@ function OmniHubSupplier.initUI()
         "OmniHub Supplier"%_t,               -- window caption
         "Modules"%_t,                        -- Buy tab caption
         "data/textures/icons/factory.png",   -- Buy tab icon
-        {showSpecialOffer = false, showAmountBoxes = true}
+        {showAmountBoxes = true}
     )
     -- Supplier only sells modules to the player — hide the Sell/Buyback tabs.
     OmniHubSupplier.shop.tabbedWindow:deactivateTab(OmniHubSupplier.shop.sellTab)
