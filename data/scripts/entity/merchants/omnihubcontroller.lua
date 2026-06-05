@@ -584,7 +584,7 @@ end
 
 function OmniHub.refreshManageUI()
     OmniHub._btnKey = {}   -- clear stale button→key mappings
-    if not manageInstalledFrame then return end
+    if not manageInstalledFrame or not manageInventoryFrame then return end
 
     -- Hide and clear installed rows
     for _, row in ipairs(manageInstalledRows) do
@@ -613,8 +613,6 @@ function OmniHub.refreshManageUI()
         label:setLeftAligned()
 
         local btn = manageInstalledFrame:createButton(vsplit.right, "Uninstall"%_t, "onUninstallButtonPress")
-        -- Store key in a module-level lookup table since Avorion buttons may not support setUserValue
-        OmniHub._btnKey = OmniHub._btnKey or {}
         OmniHub._btnKey[btn.index] = entry.key
 
         manageInstalledRows[#manageInstalledRows + 1] = {label = label, button = btn, key = entry.key}
@@ -644,7 +642,6 @@ function OmniHub.refreshManageUI()
         label:setLeftAligned()
 
         local btn = manageInventoryFrame:createButton(vsplit.right, "Install"%_t, "onInstallButtonPress")
-        OmniHub._btnKey = OmniHub._btnKey or {}
         OmniHub._btnKey[btn.index] = tostring(entry.slotIndex)
 
         manageInventoryRows[#manageInventoryRows + 1] = {
