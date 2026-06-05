@@ -520,10 +520,26 @@ end
 function OmniHub.onCloseWindow()
 end
 
--- Placeholder — replaced in Task 8
-function OmniHub.buildManageTab(tab, size)
-    local label = tab:createLabel(vec2(10, 10), "Install modules from your inventory below."%_t, 14)
-    label.size  = vec2(size.x - 20, 20)
+function OmniHub.buildManageTab(tab, windowSize)
+    local padding = 10
+    local tabSize = vec2(windowSize.x - 20, windowSize.y - 60)
+    local splitter = UIHorizontalSplitter(Rect(vec2(0, 0), tabSize), padding, padding, 0.5)
+
+    tab:createFrame(splitter.top)
+    local topLabel = tab:createLabel(splitter.top.lower + vec2(5, 2), "Installed Modules"%_t, 14)
+    topLabel.bold  = true
+    manageInstalledFrame = tab:createScrollFrame(
+        Rect(splitter.top.lower + vec2(padding, 22), splitter.top.upper - vec2(padding, padding))
+    )
+    manageInstalledFrame.scrollSpeed = 30
+
+    tab:createFrame(splitter.bottom)
+    local botLabel = tab:createLabel(splitter.bottom.lower + vec2(5, 2), "Modules in Inventory"%_t, 14)
+    botLabel.bold  = true
+    manageInventoryFrame = tab:createScrollFrame(
+        Rect(splitter.bottom.lower + vec2(padding, 22), splitter.bottom.upper - vec2(padding, padding))
+    )
+    manageInventoryFrame.scrollSpeed = 30
 end
 
 -- Placeholder — replaced in Task 9
@@ -532,8 +548,96 @@ function OmniHub.buildProductionTab(tab, size)
     label.size  = vec2(size.x - 20, 20)
 end
 
--- Stubs — implemented in Tasks 8 & 9
-function OmniHub.refreshManageUI() end
+function OmniHub.refreshManageUI()
+    if not manageInstalledFrame then return end
+
+    -- Hide and clear installed rows
+    for _, row in ipairs(manageInstalledRows) do
+        if row.label  then row.label:hide()  end
+        if row.button then row.button:hide() end
+    end
+    manageInstalledRows = {}
+
+    local rowH  = 28
+    local pad   = 5
+    local width = manageInstalledFrame.size.x - pad * 2
+    local list  = OmniHub.lastInstalledList
+
+    for i, entry in ipairs(list) do
+        local y    = pad + (i - 1) * (rowH + pad)
+        local rect = Rect(vec2(pad, y), vec2(pad + width, y + rowH))
+        local vsplit = UIVerticalSplitter(rect, pad, 0, 0.75)
+        vsplit.rightSize = 90
+
+        local label = manageInstalledFrame:createLabel(
+            vsplit.left.lower,
+            entry.name .. " \xC3\x97" .. entry.count,
+            13
+        )
+        label.size = vsplit.left.size
+        label:setLeftAligned()
+
+        local btn = manageInstalledFrame:createButton(vsplit.right, "Uninstall"%_t, "onUninstallButtonPress")
+        -- Store key in a module-level lookup table since Avorion buttons may not support setUserValue
+        OmniHub._btnKey = OmniHub._btnKey or {}
+        OmniHub._btnKey[btn.index] = entry.key
+
+        manageInstalledRows[#manageInstalledRows + 1] = {label = label, button = btn, key = entry.key}
+    end
+
+    -- Hide and clear inventory rows
+    for _, row in ipairs(manageInventoryRows) do
+        if row.label  then row.label:hide()  end
+        if row.button then row.button:hide() end
+    end
+    manageInventoryRows = {}
+
+    local invList = OmniHub.lastInventoryList
+
+    for i, entry in ipairs(invList) do
+        local y    = pad + (i - 1) * (rowH + pad)
+        local rect = Rect(vec2(pad, y), vec2(pad + width, y + rowH))
+        local vsplit = UIVerticalSplitter(rect, pad, 0, 0.75)
+        vsplit.rightSize = 80
+
+        local label = manageInventoryFrame:createLabel(
+            vsplit.left.lower,
+            entry.name,
+            13
+        )
+        label.size = vsplit.left.size
+        label:setLeftAligned()
+
+        local btn = manageInventoryFrame:createButton(vsplit.right, "Install"%_t, "onInstallButtonPress")
+        OmniHub._btnKey = OmniHub._btnKey or {}
+        OmniHub._btnKey[btn.index] = tostring(entry.slotIndex)
+
+        manageInventoryRows[#manageInventoryRows + 1] = {
+            label     = label,
+            button    = btn,
+            slotIndex = entry.slotIndex,
+            key       = entry.key,
+        }
+    end
+end
+
+function OmniHub.onInstallButtonPress(button)
+    OmniHub._btnKey = OmniHub._btnKey or {}
+    local val = OmniHub._btnKey[button.index]
+    local slotIndex = tonumber(val)
+    if slotIndex then
+        invokeServerFunction("installModule", slotIndex)
+    end
+end
+
+function OmniHub.onUninstallButtonPress(button)
+    OmniHub._btnKey = OmniHub._btnKey or {}
+    local key = OmniHub._btnKey[button.index]
+    if key and key ~= "" then
+        invokeServerFunction("uninstallModule", key)
+    end
+end
+
 function OmniHub.refreshProductionUI() end
 
 -- Called by server RPC response — stub until Task 6
