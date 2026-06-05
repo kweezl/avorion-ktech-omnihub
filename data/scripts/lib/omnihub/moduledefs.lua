@@ -20,7 +20,18 @@ local function buildCatalog()
     local result = {}
     local seen = {}  -- deduplicate by production table identity
 
-    for goodName, prods in pairs(productionsByGood) do
+    -- Iterate goods in SORTED order. A production that yields multiple goods appears under each of
+    -- them in productionsByGood; the seen[] dedup keeps it under the FIRST good visited. pairs()
+    -- order is arbitrary and DIFFERS across script VMs (entity vs item vs client), which made the
+    -- same production get different keys in different VMs — so a key chosen by addItems (server
+    -- entity VM) could resolve to a different production, or to nothing, in the item/client VMs,
+    -- producing wrong names/icons/tooltips and "Unknown" items. Sorting makes the key deterministic.
+    local goodNames = {}
+    for goodName in pairs(productionsByGood) do goodNames[#goodNames + 1] = goodName end
+    table.sort(goodNames)
+
+    for _, goodName in ipairs(goodNames) do
+        local prods = productionsByGood[goodName]
         for idx, prod in ipairs(prods) do
             if not prod.mine and not seen[prod] then
                 seen[prod] = true

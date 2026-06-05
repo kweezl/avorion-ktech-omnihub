@@ -42,11 +42,19 @@ return function(repoRoot)
                              results     = {{name = "Steel Plate", amount = 3}} }
         local prodMine   = { mine = true, ingredients = {},
                              results = {{name = "Iron Ore", amount = 10}} }
+        -- A single production yielding TWO goods (appears under both in productionsByGood, SAME table
+        -- identity) — exercises the deterministic-key dedup: it must always key under "Helium"
+        -- (alphabetically first of Helium/Neon), never "Neon".
+        local prodGas    = { ingredients = {},
+                             results = {{name = "Helium", amount = 3}, {name = "Neon", amount = 3}},
+                             garbages = {} }
 
         productionsByGood = {
             ["Steel"]       = { prodSteel },
             ["Steel Plate"] = { prodPlateA, prodPlateB },
             ["Iron Ore"]    = { prodMine },
+            ["Helium"]      = { prodGas },
+            ["Neon"]        = { prodGas },
         }
 
         function getTranslatedFactoryName(prod, suffix)

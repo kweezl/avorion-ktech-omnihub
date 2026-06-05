@@ -49,6 +49,17 @@ return function(runner)
         end
     end)
 
+    runner:test("multi-good production keyed deterministically under its first good", function()
+        -- The mock's gas production yields Helium + Neon. Its key MUST be under "Helium" (sorted
+        -- first) in every VM, never "Neon" — otherwise the same production gets different keys in the
+        -- entity/item/client VMs and resolution breaks. Guarded so it's a no-op in-game.
+        local cat = OmniHubModuleDefs.getCatalog()
+        if cat["Helium|1"] or cat["Neon|1"] then
+            assertNotNil(cat["Helium|1"], "gas production keyed under Helium (alphabetically first)")
+            assertNil(cat["Neon|1"], "gas production NOT also keyed under Neon (deduped to first good)")
+        end
+    end)
+
     runner:test("getSortedList is ordered by name", function()
         local list = OmniHubModuleDefs.getSortedList()
         for i = 2, #list do
