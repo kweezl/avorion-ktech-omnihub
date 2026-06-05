@@ -116,10 +116,113 @@ function OmniHub.update(timeStep)
 end
 
 -- ────────────────────────────────────────────────────────────────
--- Stubs called in update() — runProductionCycles and computeTimeToProduce implemented in Task 7
+-- Production engine
 -- ────────────────────────────────────────────────────────────────
-function OmniHub.runProductionCycles(timeStep) end
-function OmniHub.computeTimeToProduce(key) return MIN_TIME_TO_PRODUCE end
+
+function OmniHub.runProductionCycles(timeStep)
+    for key, count in pairs(installed) do
+        OmniHub.tickRecipe(key, count, timeStep)
+    end
+end
+
+function OmniHub.tickRecipe(key, count, timeStep)
+    local prod = OmniHubModuleDefs.resolveRecipe(key)
+    if not prod then return end
+
+    local ttm      = timeToProduce[key] or MIN_TIME_TO_PRODUCE
+    local progress = productionProgress[key]
+
+    if progress then
+        local advance = timeStep / ttm
+        if progress.boosted then advance = advance * 2 end
+        progress.progress = progress.progress + advance
+
+        if progress.progress >= 1.0 then
+            for _, res in pairs(prod.results) do
+                OmniHub.increaseGoods(res.name, res.amount * count)
+            end
+            if prod.garbages then
+                for _, gar in pairs(prod.garbages) do
+                    OmniHub.increaseGoods(gar.name, gar.amount * count)
+                end
+            end
+            productionProgress[key] = nil
+        end
+        return
+    end
+
+    -- Try to start a new cycle
+    local entity     = Entity()
+    local canProduce = true
+    local boosted    = false
+
+    for _, ing in pairs(prod.ingredients) do
+        local need = ing.amount * count
+        local have = OmniHub.getNumGoods(ing.name)
+        if ing.optional == 0 and have < need then
+            canProduce = false
+            break
+        end
+        if ing.optional == 1 and have >= need then
+            boosted = true
+        end
+    end
+
+    if not canProduce then return end
+
+    for _, res in pairs(prod.results) do
+        local size     = OmniHub.getGoodSize(res.name)
+        local newAmt   = OmniHub.getNumGoods(res.name) + res.amount * count
+        local maxStock = OmniHub.getMaxStock({name = res.name, size = size})
+        if newAmt > maxStock or entity.freeCargoSpace < res.amount * count * size then
+            canProduce = false
+            break
+        end
+    end
+
+    if not canProduce then return end
+
+    for _, ing in pairs(prod.ingredients) do
+        local removed = OmniHub.decreaseGoods(ing.name, ing.amount * count)
+        if ing.optional == 1 and removed then
+            boosted = true
+        end
+    end
+
+    productionProgress[key] = {progress = 0, boosted = boosted}
+end
+
+function OmniHub.computeTimeToProduce(key)
+    local prod = OmniHubModuleDefs.resolveRecipe(key)
+    if not prod then return MIN_TIME_TO_PRODUCE end
+
+    local totalValue = 0
+    local totalLevel = 0
+    local samples    = 0
+
+    local function accumulate(name, amount)
+        local g = goods[name]
+        if g then
+            totalValue = totalValue + g.price * amount
+            totalLevel = totalLevel + (g.level or 0)
+            samples    = samples + 1
+        end
+    end
+
+    for _, res in pairs(prod.results) do
+        accumulate(res.name, res.amount)
+    end
+    if prod.garbages then
+        for _, gar in pairs(prod.garbages) do
+            accumulate(gar.name, gar.amount)
+        end
+    end
+
+    local avgLevel   = samples > 0 and (totalLevel / samples) or 0
+    local levelBonus = 1 + avgLevel / 100
+    local cap        = math.max(1, OmniHub.productionCapacity or 1)
+    return math.max(MIN_TIME_TO_PRODUCE, totalValue / cap / levelBonus)
+end
 
 -- ────────────────────────────────────────────────────────────────
 -- Module registry
