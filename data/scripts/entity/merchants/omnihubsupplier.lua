@@ -51,4 +51,23 @@ function OmniHubSupplier.shop:addItems()
     end
 end
 
+-- ────────────────────────────────────────────────────────────────
+-- Client UI — engine calls this on the client after initialize().
+-- shop:initUI registers the interaction window (which creates the
+-- interaction-menu option) and builds the Buy tab. Without it, no
+-- menu entry appears when the player interacts with the station.
+-- ────────────────────────────────────────────────────────────────
+function OmniHubSupplier.initUI()
+    OmniHubSupplier.shop:initUI(
+        "Buy Modules"%_t,                    -- interaction-menu caption
+        "OmniHub Supplier"%_t,               -- window caption
+        "Modules"%_t,                        -- Buy tab caption
+        "data/textures/icons/factory.png",   -- Buy tab icon
+        {showSpecialOffer = false, showAmountBoxes = true}
+    )
+    -- Supplier only sells modules to the player — hide the Sell/Buyback tabs.
+    OmniHubSupplier.shop.tabbedWindow:deactivateTab(OmniHubSupplier.shop.sellTab)
+    OmniHubSupplier.shop.tabbedWindow:deactivateTab(OmniHubSupplier.shop.buyBackTab)
+end
+
 return OmniHubSupplier

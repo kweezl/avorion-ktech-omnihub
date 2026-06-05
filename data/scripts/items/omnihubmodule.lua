@@ -1,4 +1,8 @@
 package.path = package.path .. ";data/scripts/lib/?.lua"
+-- Item-script VMs (UsableInventoryItem) do NOT get the default "data/scripts/?.lua" path
+-- entry that entity/sector VMs have, so the "lib/omnihub/..." include style fails to resolve
+-- (it would look under data/scripts/lib/lib/...). Add it explicitly. See serverlog 2026-06-05.
+package.path = package.path .. ";data/scripts/?.lua"
 include("utility")
 local OmniHubModuleDefs = include("lib/omnihub/moduledefs")
 
