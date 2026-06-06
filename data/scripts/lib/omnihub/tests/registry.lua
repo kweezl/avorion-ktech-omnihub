@@ -11,6 +11,7 @@ OmniHubTestRegistry.pure = {
     "config_spec",
     "modconfig_spec",
     "moduledefs_spec",
+    "moduleitem_spec",
     "production_spec",
     "supplier_spec",
 }
