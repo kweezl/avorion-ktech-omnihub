@@ -33,7 +33,7 @@ from pathlib import Path
 # read_mod_folder). Normally the deploy folder name comes from modinfo.lua.
 MOD_FOLDER_NAME = "KTechOmniHub"
 WHITELIST = ["modinfo.lua", "modconfig.lua", "data"]  # copied recursively (dirs) / as-is (files)
-OPTIONAL_FILES = ["thumb.png", "thumb.jpg"]  # Workshop thumbnail, copied only if present
+OPTIONAL_FILES = ["thumbnail.jpg", "thumb.png", "thumb.jpg"]  # Workshop thumbnail, copied only if present
 PRESERVE_MODINFO_KEYS = ["id"]               # steam-injected keys carried across a clean build
 
 # Captures the top-level `id` value (numeric Workshop id or placeholder string) from an
