@@ -111,7 +111,16 @@ return function(repoRoot)
             end
             result = chunk()
         else
-            error("mock include: unmocked module '" .. tostring(name) .. "'")
+            -- Fall back to the omnihub lib dir so BARE includes resolve the way they do in-game,
+            -- where the controller adds data/scripts/lib/omnihub/?.lua to package.path (e.g.
+            -- moduleitem.lua's include("moduledefs")). A miss here (e.g. "mcm", absent off-engine)
+            -- still errors, which pcall-guarded optional includes treat as "not installed".
+            local path = repoRoot .. "/data/scripts/lib/omnihub/" .. name .. ".lua"
+            local chunk = loadfile(path)
+            if not chunk then
+                error("mock include: unmocked module '" .. tostring(name) .. "'")
+            end
+            result = chunk()
         end
 
         cache[name] = (result == nil) and NIL or result
