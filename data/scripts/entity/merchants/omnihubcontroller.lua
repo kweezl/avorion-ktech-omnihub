@@ -87,24 +87,28 @@ end
 -- Loot drops on destruction
 -- ────────────────────────────────────────────────────────────────
 
-function OmniHub.onDestroyed(lastDamageInflictor)
+-- Signature is onDestroyed(index, lastDamageInflictor) per the engine (Entity Callbacks doc).
+function OmniHub.onDestroyed(index, lastDamageInflictor)
     if not onServer() then return end
 
-    local dropChance = OmniHubConfig.get("dropChance")
-    local rng        = random()
-    local loot       = Loot(Entity().id)
+    -- Pure roll decides which installed units drop; engine calls (item construction + drop) stay here.
+    local drops = OmniHubProduction.rollDrops(installed, OmniHubConfig.get("dropChance"), random())
+    if #drops == 0 then return end
 
-    for key, count in pairs(installed) do
-        for _ = 1, count do
-            if rng:test(dropChance) then
-                local item = UsableInventoryItem(
-                    "data/scripts/items/omnihubmodule.lua",
-                    Rarity(RarityType.Common),
-                    key
-                )
-                loot:insert(item)
-            end
-        end
+    -- A station's modules are usable items, so they must be dropped via Sector():dropUsableItem at
+    -- destruction time — NOT inserted into the Loot component, which the engine only spawns from
+    -- content populated *before* death (mirrors entity/utility/buildingknowledgeloot.lua). reservedFor
+    -- is nil → free-for-all wreckage loot.
+    local sector = Sector()
+    local pos    = Entity().translationf
+
+    for _, key in ipairs(drops) do
+        local item = UsableInventoryItem(
+            "data/scripts/items/omnihubmodule.lua",
+            Rarity(OmniHubModuleDefs.RARITY),
+            key
+        )
+        sector:dropUsableItem(pos, nil, nil, item)
     end
 end
 
@@ -365,7 +369,7 @@ function OmniHub.uninstallModule(key)
 
     local item = UsableInventoryItem(
         "data/scripts/items/omnihubmodule.lua",
-        Rarity(RarityType.Common),
+        Rarity(OmniHubModuleDefs.RARITY),
         key
     )
     inventory:addOrDrop(item, true)

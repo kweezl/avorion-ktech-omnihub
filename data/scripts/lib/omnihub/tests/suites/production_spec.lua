@@ -138,4 +138,54 @@ return function(runner)
             makeQuery({ ore = 10, plate = 100 }, {}, { plate = 101 }, 1e12))  -- 100+3 > 101
         fls(d.canProduce, "should not produce over max stock")
     end)
+
+    -- ── rollDrops ─────────────────────────────────────────────────────────────
+    -- Mock rng exposing :test(p); records the probabilities it was asked about.
+    local function constRng(value)
+        return {
+            calls = {},
+            test  = function(self, p) self.calls[#self.calls + 1] = p; return value end,
+        }
+    end
+    -- Consumes a fixed boolean sequence, one per :test call.
+    local function seqRng(results)
+        local i = 0
+        return { test = function(self, p) i = i + 1; return results[i] == true end }
+    end
+    local function countKeys(list)
+        local c = {}
+        for _, k in ipairs(list) do c[k] = (c[k] or 0) + 1 end
+        return c
+    end
+
+    runner:test("rollDrops drops every installed unit when rng always passes", function()
+        local drops = OmniHubProduction.rollDrops({ A = 2, B = 3 }, 0.5, constRng(true))
+        eq(#drops, 5, "all 5 units drop")
+        local c = countKeys(drops)
+        eq(c.A, 2, "A dropped x2")
+        eq(c.B, 3, "B dropped x3")
+    end)
+
+    runner:test("rollDrops drops nothing when rng always fails", function()
+        eq(#OmniHubProduction.rollDrops({ A = 2, B = 3 }, 0.5, constRng(false)), 0, "no drops")
+    end)
+
+    runner:test("rollDrops rolls once per unit using the supplied dropChance", function()
+        local rng = constRng(false)
+        OmniHubProduction.rollDrops({ A = 2, B = 3 }, 0.42, rng)
+        eq(#rng.calls, 5, "one roll per installed unit")
+        for _, p in ipairs(rng.calls) do eq(p, 0.42, "rolls at dropChance") end
+    end)
+
+    runner:test("rollDrops honors per-unit rng outcomes", function()
+        -- single key keeps the inner-loop consumption order deterministic
+        local drops = OmniHubProduction.rollDrops({ A = 4 }, 0.5, seqRng({ true, false, true, false }))
+        eq(#drops, 2, "two of four units drop")
+        eq(drops[1], "A")
+        eq(drops[2], "A")
+    end)
+
+    runner:test("rollDrops returns empty for no installed modules", function()
+        eq(#OmniHubProduction.rollDrops({}, 1.0, constRng(true)), 0, "empty installed -> no drops")
+    end)
 end

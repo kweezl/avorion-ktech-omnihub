@@ -25,7 +25,7 @@ function OmniHubModule.create(item, rarity, key)
     end
 
     local prod = def.production
-    rarity = rarity or Rarity(RarityType.Common)
+    rarity = rarity or Rarity(OmniHubModuleDefs.RARITY)
 
     item.stackable      = true
     item.depleteOnUse   = false

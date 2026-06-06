@@ -161,4 +161,21 @@ function OmniHubProduction.canStartCycle(recipe, count, query)
     return {canProduce = true, boosted = boosted}
 end
 
+-- Roll which installed modules drop when the station is destroyed.
+-- Pure: rolls once per installed unit at `dropChance` using `rng` (an object exposing
+-- `:test(probability)`, like the engine's Random). Returns a flat list of module keys to drop
+-- (one entry per surviving roll; repeats allowed). The caller turns each key into a
+-- UsableInventoryItem and hands it to Sector():dropUsableItem — those engine calls stay out of here.
+function OmniHubProduction.rollDrops(installed, dropChance, rng)
+    local drops = {}
+    for key, count in pairs(installed) do
+        for _ = 1, count do
+            if rng:test(dropChance) then
+                drops[#drops + 1] = key
+            end
+        end
+    end
+    return drops
+end
+
 return OmniHubProduction

@@ -14,6 +14,18 @@ return function(repoRoot)
     local smeta = getmetatable("")
     if smeta then smeta.__mod = function(s) return s end end
 
+    -- RarityType enum — canonical Avorion values, so moduledefs.lua (which pins the module item
+    -- rarity) loads off-engine and rarity assertions mean what they do in-game.
+    RarityType = {
+        Petty       = -1,
+        Common      =  0,
+        Uncommon    =  1,
+        Rare        =  2,
+        Exceptional =  3,
+        Exotic      =  4,
+        Legendary   =  5,
+    }
+
     -- lerp — copy of data/scripts/lib/utility.lua:4-22 (the real one lives in an engine lib).
     function lerp(factor, lowerBound, upperBound, lowerValue, upperValue, allowOverstepping)
         if lowerBound > upperBound then
