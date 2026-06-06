@@ -31,18 +31,38 @@ Scripts are loaded directly by the game engine — there is no compile step. To 
 
 ## EmmyLua Stubs
 
-`stubs/` contains EmmyLua type annotation stubs for all engine-injected globals. These files are never deployed — they exist only so IntelliJ's EmmyLua plugin can resolve types and suppress false `undefined-global` warnings.
+EmmyLua type-annotation stubs for the engine API live in `stubs/generated/` and
+exist only so IntelliJ's EmmyLua plugin can resolve types and suppress false
+`undefined-global` warnings. They are never deployed.
 
-| File | Contents |
-|------|----------|
-| `avorion_globals.lua` | Engine functions: `include`, `invokeServerFunction`, `onServer`, `callingPlayer`, etc. |
-| `avorion_math.lua` | Geometry types: `vec2`, `vec3`, `quat`, `Rect`, `ColorRGB`, `Random`, math helpers |
-| `avorion_types.lua` | Object types: `Entity`, `Player`, `Sector`, `Faction`, `Galaxy`, `ShipAI`, `CargoBay`, `DockingPositions`, `Plan`, `TradingGood` |
-| `avorion_enums.lua` | Enum tables: `EntityType`, `AIState`, `ChatMessageType`, `WeaponCategory`, `AlliancePrivilege`, `FontType` |
-| `avorion_ui.lua` | UI widgets and layout helpers: `Label`, `Button`, `ComboBox`, `TabbedWindow`, `UIVerticalSplitter`, etc. |
+The stubs are **generated**, not hand-written — `stub_generator.py` (repo root)
+parses the shipped Avorion API documentation (`$AVORION_DATA_DIR/../documentation`,
+~270 HTML pages) into one snake_case `.lua` file per type (`entity.lua`,
+`cargo_bay.lua`, `globals.lua`, …). `stubs/generated/` is **gitignored** — the
+generator is the source of truth, so regenerate after cloning or when the game
+updates:
 
-**IntelliJ setup:** add `stubs/` as a Source root so EmmyLua scans it:
+```sh
+python stub_generator.py            # docs path from $AVORION_DATA_DIR; out → stubs/generated/
+python stub_generator.py <docs> <out>   # or pass paths explicitly
+```
+
+Requires Python 3 + `beautifulsoup4` (`pip install beautifulsoup4`). Engine
+globals that have no documentation page (`include`, `callable`, `callingPlayer`,
+`_t`/`_T`, `quat`, …) are hand-maintained in the generator's `EXTRAS_LUA` block
+and emitted as `stubs/generated/_extras.lua`; types referenced but lacking a doc
+page are forward-declared in `stubs/generated/_forward.lua`.
+
+**IntelliJ setup:** add `stubs/` as a Source root so EmmyLua scans `generated/`:
 _File → Project Structure → Modules → avorion-omnihub → Sources → mark `stubs/` as Sources_
+
+**VS Code / emmylua-analyzer-rust setup:** copy `.emmyrc.json.example` →
+`.emmyrc.json` (gitignored) and set the game `data/scripts` path in
+`workspace.library` to your local Avorion install. The config wires `include`
+as the require-like function and lists `stubs/generated` as a library so the
+generated stubs resolve. `runtime.version` is set to `Lua5.4` to match the Lua
+version the mod targets (also what the off-engine tests run on via `lua54.exe`),
+which provides the `integer` type used throughout the generated stubs.
 
 ## Testing
 
@@ -78,7 +98,7 @@ suite before deploying. Add new pure suites under `suites/` and list them in `re
 
 - Lua scripts are interpreted directly by the Avorion engine — there is no compile step for the mod itself.
 - The Avorion scripting API is documented in `$AVORION_DATA_DIR/scripts/`.
-- Scripts run in a sandboxed Lua 5.2 environment; standard libraries are partially available.
+- Scripts run in a sandboxed Lua 5.4 environment; standard libraries are partially available.
 - Server-side and client-side scripts are separate; network communication uses `invokeServerFunction` (client→server), `invokeClientFunction` (server→specific client), and `broadcastInvokeClientFunction` (server→all clients). Functions must be marked with `callable(namespace, "funcName")` at file scope to be remotely invocable.
 
 Avorion-specific patterns, recipes, and reference material: see `.claude/skills/avorion-modding/`.

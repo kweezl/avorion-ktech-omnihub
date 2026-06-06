@@ -1,6 +1,11 @@
 .idea
+.vscode
+docs/superpowers
 *.iml
 __pycache__/
+stubs/generated/
 img.png
 .claude/settings.json
 .claude/settings.local.json
+.emmyrc.json
+.luarc.json

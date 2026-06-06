@@ -1,4 +1,6 @@
+package.path = package.path .. ";data/scripts/?.lua"
 package.path = package.path .. ";data/scripts/lib/?.lua"
+package.path = package.path .. ";data/scripts/lib/omnihub/?.lua"
 include("utility")
 include("faction")
 include("randomext")
@@ -7,10 +9,10 @@ include("productions")
 include("goods")
 local TradingAPI = include("tradingmanager")  -- exposes TradingAPI global
 local TradingUtility = include("tradingutility")
-local OmniHubConfig = include("lib/omnihub/config")
-local OmniHubModuleDefs = include("lib/omnihub/moduledefs")
-local OmniHubModuleItem = include("lib/omnihub/moduleitem")
-local OmniHubProduction = include("lib/omnihub/production")
+local OmniHubConfig = include("config")
+local OmniHubModuleDefs = include("moduledefs")
+local OmniHubModuleItem = include("moduleitem")
+local OmniHubProduction = include("production")
 local Dialog = include("dialogutility")
 
 -- Don't remove or alter the following comment, it tells the game the namespace this script lives in.
