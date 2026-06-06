@@ -1,12 +1,14 @@
+package.path = package.path .. ";data/scripts/?.lua"
 package.path = package.path .. ";data/scripts/lib/?.lua"
+package.path = package.path .. ";data/scripts/lib/omnihub/?.lua"
 include("utility")
 include("faction")
 include("callable")
 local ShopAPI = include("shop")
-local OmniHubConfig  = include("lib/omnihub/config")
-local OmniHubModuleDefs = include("lib/omnihub/moduledefs")
-local OmniHubModuleItem = include("lib/omnihub/moduleitem")
-local OmniHubSupplierStock = include("lib/omnihub/supplierstock")
+local OmniHubConfig  = include("config")
+local OmniHubModuleDefs = include("moduledefs")
+local OmniHubModuleItem = include("moduleitem")
+local OmniHubSupplierStock = include("supplierstock")
 
 -- Don't remove or alter the following comment, it tells the game the namespace this script lives in.
 -- namespace OmniHubSupplier

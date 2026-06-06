@@ -1,5 +1,6 @@
 package.path = package.path .. ";data/scripts/lib/?.lua"
-local OmniHubModuleDefs = include("lib/omnihub/moduledefs")
+package.path = package.path .. ";data/scripts/lib/omnihub/?.lua"
+local OmniHubModuleDefs = include("moduledefs")
 
 -- namespace OmniHubModuleItem
 -- Builds the inventory item that represents one OmniHub module. Modules are passive tokens whose

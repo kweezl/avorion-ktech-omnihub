@@ -1,0 +1,44 @@
+{
+  "$schema": "https://raw.githubusercontent.com/EmmyLuaLs/emmylua-analyzer-rust/refs/heads/main/crates/emmylua_code_analysis/resources/schema.json",
+
+  "runtime": {
+    "version": "Lua5.4",
+    "requireLikeFunction": ["include"],
+    "requirePattern": [
+      "?.lua",
+      "?",
+      "data/scripts/?.lua",
+      "data/scripts/?",
+      "data/scripts/lib/?.lua",
+      "data/scripts/lib/?",
+      "data/scripts/entity/?.lua",
+      "data/scripts/entity/?",
+      "data/scripts/player/?.lua",
+      "data/scripts/player/?",
+      "data/scripts/sector/?.lua",
+      "data/scripts/sector/?"
+    ]
+  },
+
+  "workspace": {
+    "library": [
+      "./data/scripts",
+      "./tests",
+      "./stubs/generated",
+      "C:/Path/To/SteamLibrary/steamapps/common/Avorion/data/scripts"
+    ],
+    "ignoreDir": [
+      ".git",
+      "logs",
+      "__pycache__",
+      ".idea",
+      ".vscode"
+    ]
+  },
+
+  "completion": {
+    "autoRequire": true,
+    "autoRequireFunction": "include",
+    "autoRequireSeparator": "/"
+  }
+}
