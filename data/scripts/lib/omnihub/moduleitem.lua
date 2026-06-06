@@ -57,7 +57,7 @@ function OmniHubModuleItem.describe(key)
         return {
             known  = false,
             name   = "Unknown OmniHub Module"%_t,
-            values = { subtype = "OmniHubModule", moduleKey = key or "" },
+            values = { subtype = OmniHubModuleDefs.SUBTYPE, moduleKey = key or "" },
             lines  = {},
         }
     end
@@ -67,7 +67,7 @@ function OmniHubModuleItem.describe(key)
         name   = def.name,
         price  = def.price,
         icon   = def.icon,
-        values = { subtype = "OmniHubModule", moduleKey = key, category = "factory" },
+        values = { subtype = OmniHubModuleDefs.SUBTYPE, moduleKey = key, category = OmniHubModuleDefs.CATEGORY },
         lines  = OmniHubModuleItem.tooltipLines(def),
     }
 end

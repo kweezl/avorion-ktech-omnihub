@@ -73,7 +73,7 @@ return function(runner)
         for key, def in pairs(OmniHubModuleDefs.getCatalog()) do
             local primary  = def.production.results[1]
             local g        = primary and goods[primary.name]
-            local expected = (g and g.icon) or "data/textures/omnihub.png"
+            local expected = (g and g.icon) or "data/textures/icons/omnihub.png"
             assertEqual(def.icon, expected, "icon matches primary good icon for " .. key)
         end
     end)
@@ -93,5 +93,32 @@ return function(runner)
     runner:test("module item rarity is Exotic", function()
         assertEqual(OmniHubModuleDefs.RARITY, RarityType.Exotic, "module rarity is Exotic")
         assertTrue(OmniHubModuleDefs.RARITY ~= RarityType.Common, "module rarity is not Common")
+    end)
+
+    -- Pin the shared string constants to their exact wire values. SUBTYPE tags persisted inventory
+    -- items (changing it silently orphans existing module stacks) and ICON is an on-disk asset path,
+    -- so both are part of the public contract. This test fails loudly if either is changed, forcing
+    -- the change to be deliberate. Literals here are intentionally independent of the constants.
+    runner:test("string constants are stable, non-empty strings", function()
+        assertEqual(OmniHubModuleDefs.SUBTYPE,  "OmniHubModule",                         "SUBTYPE wire value")
+        assertEqual(OmniHubModuleDefs.CATEGORY, "factory",                               "CATEGORY wire value")
+        assertEqual(OmniHubModuleDefs.ICON,     "data/textures/icons/omnihub.png",       "ICON asset path")
+        assertEqual(OmniHubModuleDefs.MAP_ICON, "data/textures/icons/pixel/omnihub.png", "MAP_ICON asset path")
+        for _, name in ipairs({ "SUBTYPE", "CATEGORY", "ICON", "MAP_ICON" }) do
+            local v = OmniHubModuleDefs[name]
+            assertTrue(type(v) == "string" and v ~= "", name .. " is a non-empty string")
+        end
+    end)
+
+    -- The catalog's icon fallback must resolve through the ICON constant (not a stray literal), so a
+    -- module whose primary good has no icon still points at the real on-disk asset.
+    runner:test("icon fallback uses the ICON constant", function()
+        for key, def in pairs(OmniHubModuleDefs.getCatalog()) do
+            local primary = def.production.results[1]
+            local g       = primary and goods[primary.name]
+            if not (g and g.icon) then
+                assertEqual(def.icon, OmniHubModuleDefs.ICON, "fallback icon is ICON for " .. key)
+            end
+        end
     end)
 end

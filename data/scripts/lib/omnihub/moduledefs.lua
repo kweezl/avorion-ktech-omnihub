@@ -13,6 +13,13 @@ OmniHubModuleDefs = {}
 -- loot reads as valuable; Common drops were routinely ignored by players.
 OmniHubModuleDefs.RARITY = RarityType.Exotic
 
+-- Shared string constants — single source of truth so call sites never hand-type a literal that
+-- could drift or typo (e.g. invItem:getValue("subtype") == OmniHubModuleDefs.SUBTYPE).
+OmniHubModuleDefs.SUBTYPE  = "OmniHubModule"                 -- item subtype tag (install detection)
+OmniHubModuleDefs.CATEGORY = "factory"                       -- item category value
+OmniHubModuleDefs.ICON     = "data/textures/icons/omnihub.png"        -- full mod icon (shop tabs, menu, item fallback)
+OmniHubModuleDefs.MAP_ICON = "data/textures/icons/pixel/omnihub.png"  -- small monochrome icon for the 3D scene + map (EntityIcon)
+
 local catalog = nil  -- lazy-built on first call
 
 -- Builds a stable key from goodName + productionIndex.
@@ -48,7 +55,7 @@ local function buildCatalog()
                 local primaryResult = prod.results and prod.results[1]
                 local primaryGood   = primaryResult and goods[primaryResult.name]
                 local techLevel     = primaryGood and primaryGood.level or nil
-                local icon          = (primaryGood and primaryGood.icon) or "data/textures/omnihub.png"
+                local icon          = (primaryGood and primaryGood.icon) or OmniHubModuleDefs.ICON
                 result[key] = {
                     key             = key,
                     goodName        = goodName,

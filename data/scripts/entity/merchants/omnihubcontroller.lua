@@ -53,7 +53,7 @@ function OmniHub.interactionPossible(playerIndex, option)
 end
 
 function OmniHub.getIcon()
-    return "data/textures/icons/factory.png"
+    return OmniHubModuleDefs.ICON
 end
 
 function OmniHub.initialize()
@@ -62,6 +62,13 @@ function OmniHub.initialize()
     if entity.title == "" then
         entity.title = "OmniHub"%_t
         InteractionText(entity.index).text = Dialog.generateStationInteractionText(entity, random())
+    end
+
+    -- Floating icon in the 3D scene + on the map. This is the EntityIcon component (set client-side),
+    -- distinct from getIcon() above which only feeds the interaction menu. Guard on "" so we don't
+    -- stomp an icon another script already set. Matches the vanilla equipmentdock/factory pattern.
+    if onClient() and EntityIcon().icon == "" then
+        EntityIcon().icon = OmniHubModuleDefs.MAP_ICON
     end
 
     if onServer() then
@@ -326,7 +333,7 @@ function OmniHub.installModule(inventoryIndex)
 
     local item = inventory:find(inventoryIndex)
     if not item then return end
-    if item:getValue("subtype") ~= "OmniHubModule" then return end
+    if item:getValue("subtype") ~= OmniHubModuleDefs.SUBTYPE then return end
 
     local key = item:getValue("moduleKey")
     if not key or key == "" then return end
@@ -397,7 +404,7 @@ function OmniHub.sendModuleDataTo(player)
     local invSlots = inventory:getItemsByType(InventoryItemType.VanillaItem)
     for slotIndex, slot in pairs(invSlots) do
         local invItem = slot.item
-        if invItem and invItem:getValue("subtype") == "OmniHubModule" then
+        if invItem and invItem:getValue("subtype") == OmniHubModuleDefs.SUBTYPE then
             local ikey = invItem:getValue("moduleKey")
             local def  = OmniHubModuleDefs.get(ikey)
             inventoryList[#inventoryList + 1] = {
