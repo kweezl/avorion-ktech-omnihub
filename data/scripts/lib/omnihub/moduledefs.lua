@@ -8,6 +8,11 @@ if not goods then include("goods") end
 -- namespace OmniHubModuleDefs
 OmniHubModuleDefs = {}
 
+-- Rarity of every OmniHub module item — single source of truth for all construction sites
+-- (onDestroyed drops, uninstall, supplier stock, and the item create() fallback). Exotic so the
+-- loot reads as valuable; Common drops were routinely ignored by players.
+OmniHubModuleDefs.RARITY = RarityType.Exotic
+
 local catalog = nil  -- lazy-built on first call
 
 -- Builds a stable key from goodName + productionIndex.

@@ -89,4 +89,9 @@ return function(runner)
     runner:test("get returns nil for an unknown key", function()
         assertNil(OmniHubModuleDefs.get("no_such_good|999"), "unknown key should be nil")
     end)
+
+    runner:test("module item rarity is Exotic", function()
+        assertEqual(OmniHubModuleDefs.RARITY, RarityType.Exotic, "module rarity is Exotic")
+        assertTrue(OmniHubModuleDefs.RARITY ~= RarityType.Common, "module rarity is not Common")
+    end)
 end

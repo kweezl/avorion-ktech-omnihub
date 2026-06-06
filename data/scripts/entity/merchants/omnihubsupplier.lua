@@ -88,7 +88,7 @@ function OmniHubSupplier.shop:addItems()
         local def  = catalog[key]
         local item = UsableInventoryItem(
             "data/scripts/items/omnihubmodule.lua",
-            Rarity(RarityType.Common),
+            Rarity(OmniHubModuleDefs.RARITY),
             key
         )
         item.price = math.ceil(def.price * priceFactor)

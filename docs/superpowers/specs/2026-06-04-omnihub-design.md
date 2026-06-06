@@ -54,6 +54,9 @@ One entity script — `omnihubcontroller.lua` — carries all hub logic:
 A module is a `UsableInventoryItem` (script: `items/omnihubmodule.lua`) with:
 - `subtype = "OmniHubModule"`, `category = "factory"` (M1), `moduleKey` (stable lookup key).
 - `stackable = true`, `tradeable = true`, `droppable = true`.
+- `rarity = Exotic` — single source of truth `OmniHubModuleDefs.RARITY`, used by every
+  construction site (loot drop, uninstall, supplier stock, item `create()` fallback). Exotic so
+  drops stand out; Common modules were routinely ignored by players.
 - Install/uninstall via the **Manage tab UI** (not double-click).
 - Stacking = `count × recipe.amount` per cycle; production time unchanged.
 
@@ -62,7 +65,10 @@ A module is a `UsableInventoryItem` (script: `items/omnihubmodule.lua`) with:
 - No native station-socket system exists; station behavior comes from attached entity scripts.
 - `factory.lua` is locked to one recipe; OmniHub implements a custom multi-recipe loop but
   reuses all recipe data (`productionsByGood`, `goods`, `TradingManager`).
-- Loot drops pre-loaded via `Loot(entityId):insert(item)`; 50%-per-unit roll in `onDestroyed`.
+- Module loot drops via `Sector():dropUsableItem(...)` in `onDestroyed` (50%-per-unit roll). The
+  `Loot` component is the wrong tool here — it only spawns content populated *before* death, so
+  usable items dropped at destruction must go through `dropUsableItem` (cf. vanilla
+  `buildingknowledgeloot.lua`). The pure roll lives in `OmniHubProduction.rollDrops`.
 - Founding reuses `stationfounder.lua`'s `transformToStation` + `StationFounder.stations` list.
 
 ---
