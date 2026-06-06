@@ -37,7 +37,7 @@ function OmniHubSupplier.interactionPossible(playerIndex, option)
 end
 
 function OmniHubSupplier.getIcon()
-    return "data/textures/icons/factory.png"
+    return OmniHubModuleDefs.ICON
 end
 
 function OmniHubSupplier.initialize()
@@ -106,15 +106,24 @@ end
 -- ────────────────────────────────────────────────────────────────
 function OmniHubSupplier.initUI()
     OmniHubSupplier.shop:initUI(
-        "Buy Modules"%_t,                    -- interaction-menu caption
+        "Buy OmniHub Modules"%_t,            -- interaction-menu caption (NPC dialogue option)
         "OmniHub Supplier"%_t,               -- window caption
-        "Modules"%_t,                        -- Buy tab caption
-        "data/textures/omnihub.png",         -- Buy tab icon (custom OmniHub icon)
+        "OmniHub Modules"%_t,                -- Buy tab caption (shown as the tab's hover tooltip)
+        OmniHubModuleDefs.ICON,              -- Buy tab icon (custom OmniHub icon)
         {showAmountBoxes = true, hideMaterialLabel = true}  -- modules have no material; reclaim it
     )
-    -- Supplier only sells modules to the player — hide the Sell/Buyback tabs.
-    OmniHubSupplier.shop.tabbedWindow:deactivateTab(OmniHubSupplier.shop.sellTab)
-    OmniHubSupplier.shop.tabbedWindow:deactivateTab(OmniHubSupplier.shop.buyBackTab)
+    -- Supplier only sells modules to the player — hide the Sell/Buyback tabs, but ONLY if THIS
+    -- shop created them (i.e. the supplier is the sole ShopAPI shop on the station). The shop lib
+    -- shares one window with one Sell tab and one Buyback tab across every shop on the entity, and
+    -- sets manageSellTab/manageBuybackTab on whichever shop created each. If another shop here
+    -- (e.g. an equipment dock) owns the shared tabs, deactivating them would remove Sell/Buyback
+    -- for that shop too — so leave them active in that case.
+    if OmniHubSupplier.shop.manageSellTab then
+        OmniHubSupplier.shop.tabbedWindow:deactivateTab(OmniHubSupplier.shop.sellTab)
+    end
+    if OmniHubSupplier.shop.manageBuybackTab then
+        OmniHubSupplier.shop.tabbedWindow:deactivateTab(OmniHubSupplier.shop.buyBackTab)
+    end
 
     -- Reflow the Buy-tab columns: collapse the (unused) material column into a compact Tech-level
     -- column, then Stock, then a WIDE Price column so large module prices fit at the normal font.
