@@ -1,8 +1,8 @@
 package.path = package.path .. ";data/scripts/lib/?.lua"
 include("productions")  -- sets productionsByGood, getFactoryCost, getTranslatedFactoryName
 -- buildCatalog -> getTranslatedFactoryName -> productions.lua:formatFactoryName indexes the
--- global `goods` table. Entity/sector VMs have it loaded ambiently, but the restricted item-script
--- VM (UsableInventoryItem) does not, so include it explicitly when absent. See serverlog 2026-06-05.
+-- global `goods` table. Entity/sector VMs have it loaded ambiently; the off-engine test VM does
+-- not, so include it explicitly when absent (the test mock installs goods on this include).
 if not goods then include("goods") end
 
 -- namespace OmniHubModuleDefs

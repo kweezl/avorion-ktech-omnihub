@@ -5,6 +5,7 @@ include("callable")
 local ShopAPI = include("shop")
 local OmniHubConfig  = include("lib/omnihub/config")
 local OmniHubModuleDefs = include("lib/omnihub/moduledefs")
+local OmniHubModuleItem = include("lib/omnihub/moduleitem")
 local OmniHubSupplierStock = include("lib/omnihub/supplierstock")
 
 -- Don't remove or alter the following comment, it tells the game the namespace this script lives in.
@@ -86,11 +87,7 @@ function OmniHubSupplier.shop:addItems()
 
     for _, key in ipairs(subset) do
         local def  = catalog[key]
-        local item = UsableInventoryItem(
-            "data/scripts/items/omnihubmodule.lua",
-            Rarity(OmniHubModuleDefs.RARITY),
-            key
-        )
+        local item = OmniHubModuleItem.build(key)
         item.price = math.ceil(def.price * priceFactor)
         local stock = OmniHubSupplierStock.rollStock(stockMin, stockMax, rng)  -- random per module
         if key == offerKey then

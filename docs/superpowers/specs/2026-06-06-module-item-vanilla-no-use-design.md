@@ -81,10 +81,11 @@ items.
 
 ### Bonus cleanup
 
-Deleting the item-script VM removes its two documented sandbox workarounds: the explicit
-`package.path .. ";data/scripts/?.lua"` hack (`omnihubmodule.lua:2-5`) and the
-`if not goods then include("goods")` guard (`moduledefs.lua:6`). The builder runs in the entity
-VM where `goods` is ambient — the guard becomes dead and is removed.
+Deleting the item-script VM removes its `package.path .. ";data/scripts/?.lua"` hack
+(`omnihubmodule.lua:2-5`) along with the whole file. The `if not goods then include("goods")`
+guard in `moduledefs.lua` is **kept** — it is still load-bearing for the off-engine test VM (the
+test mock installs `goods` on that include); only its comment is corrected to drop the stale
+item-script-VM reference.
 
 ## Testing
 
