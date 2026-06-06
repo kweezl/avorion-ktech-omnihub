@@ -165,7 +165,7 @@ end
 -- Pure: rolls once per installed unit at `dropChance` using `rng` (an object exposing
 -- `:test(probability)`, like the engine's Random). Returns a flat list of module keys to drop
 -- (one entry per surviving roll; repeats allowed). The caller turns each key into a
--- UsableInventoryItem and hands it to Sector():dropUsableItem — those engine calls stay out of here.
+-- VanillaInventoryItem and hands it to Sector():dropVanillaItem — those engine calls stay out of here.
 function OmniHubProduction.rollDrops(installed, dropChance, rng)
     local drops = {}
     for key, count in pairs(installed) do

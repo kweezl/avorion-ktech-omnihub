@@ -9,6 +9,7 @@ local TradingAPI = include("tradingmanager")  -- exposes TradingAPI global
 local TradingUtility = include("tradingutility")
 local OmniHubConfig = include("lib/omnihub/config")
 local OmniHubModuleDefs = include("lib/omnihub/moduledefs")
+local OmniHubModuleItem = include("lib/omnihub/moduleitem")
 local OmniHubProduction = include("lib/omnihub/production")
 local Dialog = include("dialogutility")
 
@@ -95,20 +96,15 @@ function OmniHub.onDestroyed(index, lastDamageInflictor)
     local drops = OmniHubProduction.rollDrops(installed, OmniHubConfig.get("dropChance"), random())
     if #drops == 0 then return end
 
-    -- A station's modules are usable items, so they must be dropped via Sector():dropUsableItem at
-    -- destruction time — NOT inserted into the Loot component, which the engine only spawns from
-    -- content populated *before* death (mirrors entity/utility/buildingknowledgeloot.lua). reservedFor
-    -- is nil → free-for-all wreckage loot.
+    -- Modules must be dropped via Sector():dropVanillaItem at destruction time — NOT inserted into
+    -- the Loot component, which the engine only spawns from content populated *before* death (mirrors
+    -- entity/utility/buildingknowledgeloot.lua). reservedFor is nil → free-for-all wreckage loot.
     local sector = Sector()
     local pos    = Entity().translationf
 
     for _, key in ipairs(drops) do
-        local item = UsableInventoryItem(
-            "data/scripts/items/omnihubmodule.lua",
-            Rarity(OmniHubModuleDefs.RARITY),
-            key
-        )
-        sector:dropUsableItem(pos, nil, nil, item)
+        local item = OmniHubModuleItem.build(key)
+        sector:dropVanillaItem(pos, nil, nil, item)
     end
 end
 
@@ -367,11 +363,7 @@ function OmniHub.uninstallModule(key)
         timeToProduce[key]      = nil
     end
 
-    local item = UsableInventoryItem(
-        "data/scripts/items/omnihubmodule.lua",
-        Rarity(OmniHubModuleDefs.RARITY),
-        key
-    )
+    local item = OmniHubModuleItem.build(key)
     inventory:addOrDrop(item, true)
 
     OmniHub.rebuild()
@@ -402,7 +394,7 @@ function OmniHub.sendModuleDataTo(player)
     -- Build list of OmniHub modules in player inventory
     local inventory     = player:getInventory()
     local inventoryList = {}
-    local invSlots = inventory:getItemsByType(InventoryItemType.UsableItem)
+    local invSlots = inventory:getItemsByType(InventoryItemType.VanillaItem)
     for slotIndex, slot in pairs(invSlots) do
         local invItem = slot.item
         if invItem and invItem:getValue("subtype") == "OmniHubModule" then
