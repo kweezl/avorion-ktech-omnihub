@@ -152,6 +152,8 @@ return function(runner)
         local d = OmniHubProduction.canStartCycle(cycleRecipe, 1,
             makeQuery({ ore = 4 }, {}, {}, 1e12))
         fls(d.canProduce, "should not produce with too little ore")
+        eq(d.reason, "ingredient", "reason is the missing ingredient")
+        eq(d.good, "ore", "names the offending good")
     end)
 
     runner:test("canStartCycle sets boosted when optional ingredient present", function()
@@ -172,12 +174,58 @@ return function(runner)
         local d = OmniHubProduction.canStartCycle(cycleRecipe, 1,
             makeQuery({ ore = 10 }, { plate = 10 }, {}, 5))  -- need 3*10=30 > 5 free
         fls(d.canProduce, "should not produce without cargo space")
+        eq(d.reason, "space", "reason is cargo space")
     end)
 
     runner:test("canStartCycle blocks when result exceeds max stock", function()
         local d = OmniHubProduction.canStartCycle(cycleRecipe, 1,
             makeQuery({ ore = 10, plate = 100 }, {}, { plate = 101 }, 1e12))  -- 100+3 > 101
         fls(d.canProduce, "should not produce over max stock")
+        eq(d.reason, "maxstock", "reason is max stock")
+        eq(d.good, "plate", "names the capped good")
+    end)
+
+    runner:test("canStartCycle credits space freed by consumed ingredients", function()
+        -- 10 ore (size 2) -> 1 plate (size 1): gross output 1, but consumed ore frees 20.
+        -- Net footprint is negative, so it must start even with ZERO free cargo.
+        local heavy = { ingredients = { { name = "ore", amount = 10, optional = 0 } },
+                        results     = { { name = "plate", amount = 1 } } }
+        local d = OmniHubProduction.canStartCycle(heavy, 1, makeQuery({ ore = 10 }, { ore = 2 }, {}, 0))
+        tru(d.canProduce, "ingredient-heavy recipe nets free space and should start")
+    end)
+
+    runner:test("canStartCycle counts garbage volume toward required cargo space", function()
+        -- results 1 plate (vol 1) + garbage 100 waste (vol 1) - 1 ore = net 100 required.
+        local gr = { ingredients = { { name = "ore", amount = 1, optional = 0 } },
+                     results      = { { name = "plate", amount = 1 } },
+                     garbages     = { { name = "waste", amount = 100 } } }
+        fls(OmniHubProduction.canStartCycle(gr, 1, makeQuery({ ore = 1 }, {}, {}, 50)).canProduce,
+            "garbage volume blocks when cargo can't hold it")
+        tru(OmniHubProduction.canStartCycle(gr, 1, makeQuery({ ore = 1 }, {}, {}, 1000)).canProduce,
+            "starts when cargo fits results + garbage")
+    end)
+
+    runner:test("describeStall explains each decision for the debug logger", function()
+        eq(OmniHubProduction.describeStall(nil), "idle (not yet evaluated)")
+        eq(OmniHubProduction.describeStall({ canProduce = true }), "ready")
+        eq(OmniHubProduction.describeStall({ canProduce = false, reason = "ingredient", good = "Wheat" }),
+            "waiting for ingredient: Wheat")
+        eq(OmniHubProduction.describeStall({ canProduce = false, reason = "maxstock", good = "Cattle" }),
+            "output at reservation cap: Cattle")
+        eq(OmniHubProduction.describeStall({ canProduce = false, reason = "space", needed = 30, free = 5 }),
+            "not enough cargo space (need 30, free 5)")
+    end)
+
+    runner:test("canStartCycle treats a nil good size as 1 instead of throwing", function()
+        -- getGoodSize returns nil for goods that are neither bought nor sold; must not crash.
+        local nilSize = {
+            getNumGoods    = function() return 100 end,
+            getGoodSize    = function() return nil end,
+            getMaxStock    = function() return 1000 end,
+            freeCargoSpace = 1000,
+        }
+        local d = OmniHubProduction.canStartCycle(cycleRecipe, 1, nilSize)
+        tru(d.canProduce, "nil size handled (defaulted to 1)")
     end)
 
     -- ── rollDrops ─────────────────────────────────────────────────────────────

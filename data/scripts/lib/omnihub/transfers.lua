@@ -15,22 +15,14 @@ local OmniHubTrading = include("trading")  -- pure partnerLabel formatter
 -- hub.decreaseGoods(name, amount), and the optional hub.recordTxn(txn) statistics hook.
 OmniHubTransfers = {}
 
--- Builds the display option list ({ {id=idString, name=...}, ... }, name-sorted) for a partner map.
+-- Returns just the partner ENTITY IDs for the config combos — no display text crosses the network.
+-- The client resolves each id to its station entity and builds the (fully localized) label itself
+-- (translatedTitle + translatedName are readable client-side, not on the server). See
+-- OmniHub.receiveHubConfig -> resolvePartnerOptions.
 function OmniHubTransfers.optionList(partners)
-    local out = {}
-    for id in pairs(partners) do
-        local station = Sector():getEntity(id)
-        if station then
-            -- Pure, nil-guarded label builder (some stations have no translatedTitle and some
-            -- factions a nil translatedName — concatenating nil here previously crashed sendHubConfig).
-            local faction = Faction(station.factionIndex)
-            local fname   = faction and (faction.translatedName or faction.name)
-            local label   = OmniHubTrading.partnerLabel(station.translatedTitle or station.title, station.name, fname)
-            out[#out + 1] = { id = id, name = label }
-        end
-    end
-    table.sort(out, function(a, b) return a.name < b.name end)
-    return out
+    local ids = {}
+    for id in pairs(partners) do ids[#ids + 1] = id end
+    return ids
 end
 
 -- Scans the sector for stations that can trade the hub's goods. Returns:

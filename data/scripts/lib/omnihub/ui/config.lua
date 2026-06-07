@@ -14,6 +14,48 @@ local SLOTS = 3  -- deliver / fetch dropdown slots per direction (matches vanill
 local function factorToSlider(f) return round(((f or 1.0) - 1.0) * 100) end
 local function sliderToFactor(v) return 1.0 + (v or 0) / 100.0 end
 
+-- Adds a captioned numeric text box (digits only) to a vertical lister and returns the box. NO
+-- per-keystroke callback: committing every character round-trips to the server, which clamps/floors the
+-- partial value and echoes it back, overwriting what you're typing. Instead the box commits on
+-- focus-out / Enter — pollLimitCommit (driven by the controller's updateClient) watches isTypingActive.
+-- clearOnClick wipes the field on click so you can type a fresh value without deleting first.
+function OmniHubUIConfig:numField(tab, lister, caption, tooltip)
+    local lbl = tab:createLabel(Rect(), caption, 11)
+    lbl.tooltip = tooltip
+    lister:placeElementTop(lbl)
+
+    local box = tab:createTextBox(Rect(), "")
+    box.allowedCharacters = "0123456789"
+    box.clearOnClick = 1
+    box.tooltip = tooltip
+    lister:placeElementTop(box)
+    return box
+end
+
+-- Sets a limit box's text without stomping it while the player is typing, and records the shown value
+-- as the committed baseline so pollLimitCommit only fires on a real edit.
+function OmniHubUIConfig:setLimitBox(box, idx, val)
+    if not box or box.isTypingActive then return end
+    local text = (val ~= nil) and tostring(val) or ""
+    box.text = text
+    self.limitCommitted[idx] = text
+end
+
+-- Called each client tick by the controller. Commits a limit field once it LOSES focus (isTypingActive
+-- false) with a value different from what was last committed — i.e. on focus-out or Enter, not per
+-- keystroke. Returns true if anything changed (the controller then pushes the full config).
+function OmniHubUIConfig:pollLimitCommit()
+    if not self.limitBoxes then return false end
+    local changed = false
+    for i, box in ipairs(self.limitBoxes) do
+        if not box.isTypingActive and box.text ~= self.limitCommitted[i] then
+            self.limitCommitted[i] = box.text
+            changed = true
+        end
+    end
+    return changed
+end
+
 function OmniHubUIConfig.new(tab, size, opts)
     local self = setmetatable({}, OmniHubUIConfig)
     self.opts            = opts
@@ -33,6 +75,14 @@ function OmniHubUIConfig.new(tab, size, opts)
     self.activeSellCheck = tab:createCheckBox(Rect(), "Actively sell products"%_t, opts.changeCallback)
     left:placeElementTop(self.activeSellCheck)
     self.activeSellCheck.tooltip = "If checked, the hub summons traders to buy its products when stocks get full."%_t
+
+    -- Dev-only: production debug logging. Only build the checkbox when dev mode is on (mirrors the
+    -- dev-gated Tests tab); on a normal client the field simply doesn't exist and read() omits it.
+    if GameSettings().devMode then
+        self.debugCheck = tab:createCheckBox(Rect(), "Debug production logging (dev)"%_t, opts.changeCallback)
+        left:placeElementTop(self.debugCheck)
+        self.debugCheck.tooltip = "Dev only. Periodically prints each module's production state (active / stalled + reason) to the server log."%_t
+    end
 
     left:nextRect(12)
 
@@ -59,6 +109,23 @@ function OmniHubUIConfig.new(tab, size, opts)
     self.sellPriceSlider:setValueNoCallback(0)
     self.sellPriceSlider.onMouseUpChangedFunction = opts.priceCommitCallback
     self.sellPriceSlider.tooltip = "Price the hub charges for products. A lower price attracts more buyers."%_t
+
+    left:nextRect(12)
+
+    -- ── Max Limit (per-good stock caps, in units) ────────────────────────────
+    local rlabel = tab:createLabel(Rect(), "Max Limit (units)"%_t, 12)
+    left:placeElementTop(rlabel); rlabel.centered = true
+
+    self.limitBuyBox = self:numField(tab, left, "Buy goods max limit"%_t,
+        "Max units stocked of each good you mark to Buy that the hub neither produces nor consumes (a passthrough trade good). 0 = don't stockpile it."%_t)
+    self.limitBaseBox = self:numField(tab, left, "Production base"%_t,
+        "Base multiplier for goods the hub produces or consumes. Max limit = base x cycles x the good's per-cycle amount across all modules."%_t)
+    self.limitCyclesBox = self:numField(tab, left, "Production cycles"%_t,
+        "How many production cycles of buffer to keep for produced/consumed goods. The hub stops a good's production once it reaches the max limit (or the cargo bay is full)."%_t)
+
+    -- Ordered list + committed baseline for focus-out commits (see pollLimitCommit).
+    self.limitBoxes     = { self.limitBuyBox, self.limitBaseBox, self.limitCyclesBox }
+    self.limitCommitted = { self.limitBuyBox.text, self.limitBaseBox.text, self.limitCyclesBox.text }
 
     -- ── Right: inter-station transfers ───────────────────────────────────────
     local right = UIVerticalLister(vsplit.right, 6, 0)
@@ -113,6 +180,7 @@ function OmniHubUIConfig:apply(cfg)
     if not cfg then return end
     self.activeBuyCheck:setCheckedNoCallback(cfg.activelyRequest ~= false)
     self.activeSellCheck:setCheckedNoCallback(cfg.activelySell ~= false)
+    if self.debugCheck then self.debugCheck:setCheckedNoCallback(cfg.debug == true) end
 
     self.buyPriceSlider:setValueNoCallback(factorToSlider(cfg.priceFactorBuy))
     self.sellPriceSlider:setValueNoCallback(factorToSlider(cfg.priceFactorSell))
@@ -127,6 +195,13 @@ function OmniHubUIConfig:apply(cfg)
     end
     applySelection(self.deliveredCombos, cfg.deliveredIds)
     applySelection(self.deliveringCombos, cfg.deliveringIds)
+
+    if self.limitBoxes then
+        -- Skips any field currently being typed in (setLimitBox), so the server echo never stomps it.
+        self:setLimitBox(self.limitBuyBox,    1, cfg.limitBuy)
+        self:setLimitBox(self.limitBaseBox,   2, cfg.limitBase)
+        self:setLimitBox(self.limitCyclesBox, 3, cfg.limitCycles)
+    end
 end
 
 function OmniHubUIConfig:refreshPriceLabels()
@@ -149,6 +224,11 @@ function OmniHubUIConfig:read()
         end
         return ids
     end
+    -- Explicit boolean (NOT `check and check.checked or nil`): when the box is UNchecked, `checked` is
+    -- false and the `and/or` trick collapses to nil, which the server reads as "keep current" — so the
+    -- toggle could never be turned off. nil only when there's no checkbox (non-dev client).
+    local debug = nil
+    if self.debugCheck then debug = self.debugCheck.checked == true end
     return {
         activelyRequest = self.activeBuyCheck.checked,
         activelySell    = self.activeSellCheck.checked,
@@ -156,6 +236,11 @@ function OmniHubUIConfig:read()
         priceFactorSell = sliderToFactor(self.sellPriceSlider.value),
         deliveredIds    = selectedIds(self.deliveredCombos),
         deliveringIds   = selectedIds(self.deliveringCombos),
+        -- tonumber("") -> nil; the server treats nil as "keep current" (nil-safe clamp).
+        limitBuy    = tonumber(self.limitBuyBox.text),
+        limitBase   = tonumber(self.limitBaseBox.text),
+        limitCycles = tonumber(self.limitCyclesBox.text),
+        debug       = debug,
     }
 end
 

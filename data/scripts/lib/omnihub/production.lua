@@ -131,34 +131,81 @@ end
 -- Decide whether a recipe can start a new cycle, mirroring the affordability checks in
 -- OmniHub.tickRecipe. `query` abstracts the engine reads:
 --   query.getNumGoods(name)        -> current stock of a good
---   query.getGoodSize(name)        -> cargo size per unit of a good
+--   query.getGoodSize(name)        -> cargo size per unit of a good (nil -> treated as 1)
 --   query.getMaxStock(name, size)  -> max stock allowed for a good
 --   query.freeCargoSpace           -> free cargo space (snapshot value)
 -- Returns { canProduce = bool, boosted = bool }. Ingredient consumption is left to the caller.
+--
+-- Space accounting mirrors vanilla factory.lua (onRestoredFromDisk:269-290): a cycle's NET cargo
+-- footprint is outputs (results + garbages) MINUS the non-optional ingredients it consumes (which
+-- free their space). Checking the gross result volume alone wrongly blocks ingredient-heavy recipes
+-- (e.g. 64 Wheat -> 5 Carbon) when the hold is near-full even though the cycle nets free space.
+-- getGoodSize can return nil for a good that's neither bought nor sold (it only scans the trade
+-- lists); we default such sizes to 1, matching vanilla's `size = 1` fallback, instead of letting nil
+-- propagate into arithmetic and throw — a throw here would abort the whole update() tick.
+--
+-- On a block, the result also carries a machine-readable `reason` and the offending `good` (plus
+-- `needed`/`free` for the space case) so the debug logger can explain WHY a recipe is stalled:
+--   "ingredient" -> a required ingredient is below amount*count  (good = its name)
+--   "maxstock"   -> a result is already at its reservation cap   (good = its name)
+--   "space"      -> not enough free cargo for the net output     (needed/free = the volumes)
 function OmniHubProduction.canStartCycle(recipe, count, query)
-    local boosted = false
+    local boosted  = false
+    local netSpace = 0  -- positive = cycle needs this much free cargo; negative = nets free space
 
     for _, ing in pairs(recipe.ingredients) do
         local need = ing.amount * count
         local have = query.getNumGoods(ing.name)
-        if ing.optional == 0 and have < need then
-            return {canProduce = false, boosted = false}
-        end
-        if ing.optional == 1 and have >= need then
+        if ing.optional == 0 then
+            if have < need then
+                return {canProduce = false, boosted = false, reason = "ingredient", good = ing.name}
+            end
+            -- consumed non-optional ingredients free their space (vanilla counts only these)
+            netSpace = netSpace - need * (query.getGoodSize(ing.name) or 1)
+        elseif have >= need then
             boosted = true
         end
     end
 
     for _, res in pairs(recipe.results) do
-        local size     = query.getGoodSize(res.name)
+        local size     = query.getGoodSize(res.name) or 1
         local newAmt   = query.getNumGoods(res.name) + res.amount * count
         local maxStock = query.getMaxStock(res.name, size)
-        if newAmt > maxStock or query.freeCargoSpace < res.amount * count * size then
-            return {canProduce = false, boosted = boosted}
+        if newAmt > maxStock then
+            return {canProduce = false, boosted = boosted, reason = "maxstock", good = res.name}
+        end
+        netSpace = netSpace + res.amount * count * size
+    end
+
+    if recipe.garbages then
+        for _, gar in pairs(recipe.garbages) do
+            netSpace = netSpace + gar.amount * count * (query.getGoodSize(gar.name) or 1)
         end
     end
 
+    if netSpace > 0 and query.freeCargoSpace < netSpace then
+        return {canProduce = false, boosted = boosted, reason = "space",
+                needed = netSpace, free = query.freeCargoSpace}
+    end
+
     return {canProduce = true, boosted = boosted}
+end
+
+-- Human-readable one-liner for a canStartCycle decision, used by the controller's debug logger.
+-- `decision` is a canStartCycle result, or nil if the recipe hasn't been evaluated yet this run.
+function OmniHubProduction.describeStall(decision)
+    if not decision then return "idle (not yet evaluated)" end
+    if decision.canProduce then return "ready" end
+    local r = decision.reason
+    if r == "ingredient" then
+        return "waiting for ingredient: " .. tostring(decision.good)
+    elseif r == "maxstock" then
+        return "output at reservation cap: " .. tostring(decision.good)
+    elseif r == "space" then
+        return string.format("not enough cargo space (need %d, free %d)",
+            math.floor(decision.needed or 0), math.floor(decision.free or 0))
+    end
+    return "blocked"
 end
 
 -- Theoretical MAX per-good throughput (units per minute) at full utilisation, for the Goods tab's

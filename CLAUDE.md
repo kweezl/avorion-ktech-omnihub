@@ -107,4 +107,20 @@ suite before deploying. Add new pure suites under `suites/` and list them in `re
 - Scripts run in a sandboxed Lua 5.4 environment; standard libraries are partially available.
 - Server-side and client-side scripts are separate; network communication uses `invokeServerFunction` (client→server), `invokeClientFunction` (server→specific client), and `broadcastInvokeClientFunction` (server→all clients). Functions must be marked with `callable(namespace, "funcName")` at file scope to be remotely invocable.
 
+## Networking
+
+Bandwidth and tick cost matter — a multiplayer server may run many of these stations. Follow these rules when sending data between server and client:
+
+- **The server is always authoritative.** Client-sent values are requests/hints only — validate, clamp, and re-derive everything on the server before applying. Never trust a client value for a gameplay effect or permission.
+- **Send the minimum; resolve the rest client-side.** Don't ship data the client can reconstruct on its own:
+  - **Entities:** send an id (uuid/index), not the entity's data. The client resolves the live object with `Sector():getEntity(id)` / `Entity(id)` and reads what it needs.
+  - **Localized text:** never send display strings the client can localize itself. `translatedName`/`translatedTitle` are **client-only** — reading them on the server fails (and Avorion *logs the failed read even inside `pcall`*; see Pitfalls). Send the id/key and call the translated getter on the client. Use the raw `name` only when a non-localized label is acceptable.
+  - **Static/derivable data:** catalogs, recipes, schemas, and anything both VMs can `include()` should be derived locally, not transmitted.
+- **Prefer deltas over full payloads.** When one field or row changes, push just that partition (a targeted `invokeClientFunction` carrying the changed item) and patch it in place — don't re-send the whole table. Reserve full syncs for first open.
+- **Lazy-reload on demand, not eagerly.** When something goes stale but isn't visible, mark it dirty and refresh only when the player actually looks at it (e.g. on tab select), instead of pushing immediately. **Ask the user before adding any new lazy-reload trigger** — it's a UX trade-off they should approve.
+- **Don't push per-tick.** Sync on events (window open, value change, explicit request) and debounce frequent inputs (commit a text field on focus-out/Enter, not per keystroke). Raise the client `getUpdateInterval` to a fast tick only while a window is open, and drop back afterward.
+- **Target, don't broadcast.** Use `invokeClientFunction(player, ...)` for one viewer; reserve `broadcastInvokeClientFunction` for state every client genuinely needs.
+- **Gate sends by permission/relevance.** Only send owner-only data to the owner (server-side `callerIsOwner()` check on the send RPC, *and* don't request it client-side for non-owners). This is both security and bandwidth.
+- **Batch related updates** into a single RPC rather than firing several in a row; RPCs are async, fire-and-forget (no return value), so design explicit request→response pairs.
+
 Avorion-specific patterns, recipes, and reference material: see `.claude/skills/avorion-modding/`.

@@ -222,6 +222,35 @@ function OmniHubSupplier.shop:receiveSoldItems(...)
     return base_receiveSoldItems(self, ...)
 end
 
+-- Vanilla Shop:onBuyButtonPressed sends the clicked LINE index (1..itemsPerPage) to the server as the
+-- soldItems index. That only works on page 0: with our Buy-tab pagination, line i actually holds
+-- soldItems[itemStart + i - 1], so on any later page the vanilla handler buys the wrong (first-page)
+-- module. Recompute the true soldItems index from the SAME page slice updateSellGui used, then call the
+-- server with it. The special offer is page-independent, so defer to vanilla for that button.
+local base_onBuyButtonPressed = OmniHubSupplier.shop.onBuyButtonPressed
+function OmniHubSupplier.shop:onBuyButtonPressed(button)
+    if self.specialOfferUI and button.index == self.specialOfferUI.button.index then
+        return base_onBuyButtonPressed(self, button)
+    end
+
+    local lineIndex
+    for i, line in pairs(self.soldItemLines) do
+        if button.index == line.button.index then lineIndex = i; break end
+    end
+    if not lineIndex then return end
+
+    local total     = #self.soldItems
+    local perPage   = (total > BUY_NO_PAGER_LIMIT) and BUY_PAGE_SIZE or self.itemsPerPage
+    local itemIndex = OmniHubSupplierStock.lineToItemIndex(total, perPage, self.soldItemsPage or 0, lineIndex)
+    if not itemIndex then return end
+
+    local amount = 1
+    local line = self.soldItemLines[lineIndex]
+    if line and line.amountBox then amount = tonumber(line.amountBox.text) or 0 end
+
+    invokeServerFunction("sellToPlayer", itemIndex, nil, amount)
+end
+
 -- Resolve the catalog def for a shop item from its stored moduleKey (reliable in this entity VM).
 local function moduleDef(item)
     local inner = item and item.item

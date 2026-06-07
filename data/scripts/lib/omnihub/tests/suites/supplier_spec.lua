@@ -5,6 +5,7 @@ local OmniHubSupplierStock = include("lib/omnihub/supplierstock")
 
 local eq   = OmniHubTest.assertEqual
 local tru  = OmniHubTest.assertTrue
+local niln = OmniHubTest.assertNil
 local notn = OmniHubTest.assertNotNil
 
 -- A deterministic rng(hi) that walks a fixed sequence (values clamped into [1, hi]).
@@ -83,6 +84,24 @@ return function(runner)
         eq(page, 1, "clamped to last page"); eq(s, 16, "last-page start"); eq(e, 23, "last-page end")
         s, e = OmniHubSupplierStock.pageSlice(0, 15, 0)
         eq(s, 0, "empty start"); eq(e, 0, "empty end")
+    end)
+
+    runner:test("lineToItemIndex maps a Buy-tab line to the paged soldItems index", function()
+        -- 23 items, 12/page. Page 0 line 1 -> item 1; page 1 line 1 -> item 13 (the real bug: the
+        -- vanilla handler would have bought item 1 here).
+        eq(OmniHubSupplierStock.lineToItemIndex(23, 12, 0, 1), 1,  "page 0, line 1 -> item 1")
+        eq(OmniHubSupplierStock.lineToItemIndex(23, 12, 0, 12), 12, "page 0, line 12 -> item 12")
+        eq(OmniHubSupplierStock.lineToItemIndex(23, 12, 1, 1), 13, "page 1, line 1 -> item 13")
+        eq(OmniHubSupplierStock.lineToItemIndex(23, 12, 1, 11), 23, "page 1, line 11 -> item 23 (last)")
+    end)
+
+    runner:test("lineToItemIndex returns nil for lines past the stock or invalid input", function()
+        niln(OmniHubSupplierStock.lineToItemIndex(23, 12, 1, 12), "page 1 line 12 -> item 24 > 23")
+        niln(OmniHubSupplierStock.lineToItemIndex(0, 12, 0, 1),  "no stock -> nil")
+        niln(OmniHubSupplierStock.lineToItemIndex(23, 12, 0, 0),  "line 0 invalid")
+        niln(OmniHubSupplierStock.lineToItemIndex(23, 12, 0, nil), "nil line")
+        -- out-of-range page is clamped (mirrors pageSlice), so a valid line still resolves.
+        eq(OmniHubSupplierStock.lineToItemIndex(23, 12, 99, 1), 13, "page clamped to last -> item 13")
     end)
 
     runner:test("rollStock returns a value within [min, max]", function()
