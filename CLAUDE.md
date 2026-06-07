@@ -53,6 +53,12 @@ globals that have no documentation page (`include`, `callable`, `callingPlayer`,
 and emitted as `stubs/generated/_extras.lua`; types referenced but lacking a doc
 page are forward-declared in `stubs/generated/_forward.lua`.
 
+**Looking up the engine API:** grep `stubs/generated/*.lua` — NOT the HTML docs. The stubs are the
+same API distilled into clean EmmyLua (`---@field name type`, `function _Type:method(args)`), one
+snake_case file per type (e.g. `scroll_frame.lua`, `entity.lua`), so a member's type/signature is one
+grep away instead of buried in markup. Example: `grep -i scroll stubs/generated/scroll_frame.lua`.
+Only fall back to `$AVORION_DATA_DIR/../documentation/*.html` for prose the stubs don't carry.
+
 **IntelliJ setup:** add `stubs/` as a Source root so EmmyLua scans `generated/`:
 _File → Project Structure → Modules → avorion-omnihub → Sources → mark `stubs/` as Sources_
 

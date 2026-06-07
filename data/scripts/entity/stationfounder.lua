@@ -8,6 +8,8 @@ table.insert(StationFounder.stations, {
     scripts = {
         { script = "data/scripts/entity/merchants/omnihubcontroller.lua" },
         { script = "data/scripts/entity/merchants/omnihubsupplier.lua" },
+        -- Dev-mode-only "OmniHub Tests" interaction option (gated in its interactionPossible).
+        { script = "data/scripts/entity/merchants/omnihubtests.lua" },
     },
     price = 15000000,
 })

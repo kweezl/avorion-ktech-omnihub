@@ -161,6 +161,47 @@ function OmniHubProduction.canStartCycle(recipe, count, query)
     return {canProduce = true, boosted = boosted}
 end
 
+-- Theoretical MAX per-good throughput (units per minute) at full utilisation, for the Goods tab's
+-- "actual/max" rates. For each installed module, rate = amount * count / cycleTime; summed per good
+-- across all modules. `timeToProduce[key]` is the per-module cycle time (falls back to minTime).
+-- Returns { produced = { [name] = perMin }, consumed = { [name] = perMin } }.
+function OmniHubProduction.maxRates(installed, resolveRecipe, timeToProduce, minTime)
+    local produced, consumed = {}, {}
+    minTime = minTime or 15
+
+    for key, count in pairs(installed) do
+        local prod = resolveRecipe(key)
+        if prod then
+            local tt = (timeToProduce and timeToProduce[key]) or minTime
+            if tt <= 0 then tt = minTime end
+            local perMin = 60 / tt
+
+            for _, res in pairs(prod.results) do
+                produced[res.name] = (produced[res.name] or 0) + res.amount * count * perMin
+            end
+            if prod.garbages then
+                for _, gar in pairs(prod.garbages) do
+                    produced[gar.name] = (produced[gar.name] or 0) + gar.amount * count * perMin
+                end
+            end
+            for _, ing in pairs(prod.ingredients) do
+                consumed[ing.name] = (consumed[ing.name] or 0) + ing.amount * count * perMin
+            end
+        end
+    end
+
+    return { produced = produced, consumed = consumed }
+end
+
+-- Clamps an install/uninstall request to what's actually available: the player's held/installed stock
+-- and any remaining capacity (pass math.huge when uncapped). Returns the count to apply, an integer
+-- >= 0 (0 means "skip"). This is the "do the requested amount, or fall back to the real amount" rule.
+function OmniHubProduction.clampInstall(requested, available, capRemaining)
+    local n = math.min(requested or 0, available or 0, capRemaining or math.huge)
+    if n < 0 then n = 0 end
+    return math.floor(n)
+end
+
 -- Roll which installed modules drop when the station is destroyed.
 -- Pure: rolls once per installed unit at `dropChance` using `rng` (an object exposing
 -- `:test(probability)`, like the engine's Random). Returns a flat list of module keys to drop
