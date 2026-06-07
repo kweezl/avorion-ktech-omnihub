@@ -27,7 +27,44 @@ Avorion mods live in `$AVORION_MODS_DIR/<modname>/` and follow this layout conve
   - `scripts/` — Lua scripts (server, client, entity, sector scripts)
   - `textures/`, `models/`, `sounds/` — asset overrides (if any)
 
-Scripts are loaded directly by the game engine — there is no compile step. To deploy during development, symlink or copy the repo folder into `$AVORION_MODS_DIR`.
+Scripts are loaded directly by the game engine — there is no compile step.
+
+## Deploying (build.py)
+
+Deploy with `build.py` (repo root) — it copies only the deployable whitelist
+(`modinfo.lua`, `modconfig.lua`, `data/`) into `<mods-dir>/<modFolder>`, stripping dev-only files
+(`tests/`, `stubs/`, `.claude/`, `docs/`, etc.). The deploy folder name comes from the `modFolder`
+key in `modinfo.lua`; the mods dir defaults to `$AVORION_MODS_DIR`. Steam-injected `modinfo.lua`
+keys (e.g. the numeric Workshop `id`) are preserved across rebuilds.
+
+```sh
+python build.py                 # deploy to <AVORION_MODS_DIR>/<modFolder>
+python build.py --dry-run       # show what would happen, touch nothing
+python build.py --mods-dir PATH # override the mods directory
+python build.py --dest PATH     # override the full destination path
+python build.py --name NAME     # override the mod folder name
+```
+
+## Architecture
+
+Server domain logic, client UI, and engine-coupled glue are deliberately separated (see also
+`.claude/skills/avorion-modding/` for the patterns):
+
+- **Entity scripts** (`data/scripts/entity/merchants/`) — the deployed, engine-loaded scripts:
+  - `omnihubcontroller.lua` (namespace `OmniHub`) — the main station controller; orchestrates
+    production, trading, and the trade UI. Largest file.
+  - `omnihubsupplier.lua` — the supplier/shop side.
+  - `omnihubtests.lua` (namespace `OmniHubTests`) — dev-mode-only test window (see Testing).
+- **`lib/omnihub/`** — pure-ish domain modules (`production`, `trading`, `stats`, `rates`,
+  `config`, `moduledefs`, `moduleitem`, `supplierstock`). Engine-independent helpers here are what
+  the off-engine suites cover. `transfers.lua` and `factorymap` are server-only (they touch
+  `Sector()`/`Entity()`), included only under `if onServer()`.
+- **`lib/omnihub/ui/`** — client-only presentation modules (`goodstable`, `modules`, `config`,
+  `statistics`, `common`); no server calls or domain math. Included only under `if onClient()`.
+
+**MCM config:** `modconfig.lua` (repo root, deployed) integrates the optional **Mod Configuration
+Menu** mod (Workshop `3674093144`, an *optional* dependency). The mod works standalone on built-in
+defaults; when MCM is present, `OmniHubConfig.get` reads live values from it.
 
 ## EmmyLua Stubs
 
@@ -72,38 +109,32 @@ which provides the `integer` type used throughout the generated stubs.
 
 ## Testing
 
-There are two test layers, sharing one set of suites under `data/scripts/lib/omnihub/tests/`
-(`framework.lua` = tiny assert/runner, `registry.lua` = suite catalog, `suites/*_spec.lua`).
-See `tests/README.md` for details.
+**`tests/README.md` is the source of truth** for the test layout, suite list, and how each layer
+runs. The essentials:
 
-- **Off-engine (pure) tests** — run on the dev machine, no game needed. Cover engine-independent
-  logic: `lib/omnihub/config.lua`, `moduledefs.lua`, and the extracted pure helpers in
-  `lib/omnihub/production.lua` (`timeToProduce`, `sellerProbability`, `aggregate`, `canStartCycle`).
-  Run from the repo root:
+- Two layers share one set of suites under `data/scripts/lib/omnihub/tests/` (`framework.lua` =
+  assert/runner, `registry.lua` = suite catalog tagging each suite `pure` vs `integration`,
+  `suites/*_spec.lua`).
+- **Off-engine (pure)** — run on the dev machine, no game needed, against the suites tagged `pure`:
 
   ```sh
-  "$LUA_DIR/lua54.exe" tests/run.lua
+  "$LUA_DIR/lua54.exe" tests/run.lua   # exit 0 on success, 1 on any failure
   ```
 
-  Exit code is `0` on success, `1` on any failure (CI-friendly). The off-engine harness
-  (`tests/run.lua` + `tests/mocks/engine.lua`) supplies an `include()` shim and mock engine
-  globals (`productionsByGood`, `goods`, `lerp`, `%_t`). The `tests/` directory is **not** deployed
-  (`build.py` whitelists only `modinfo.lua` and `data/`).
+  Also run in CI on push/PR to `main` (`.github/workflows/tests.yml`, Lua 5.4 on `ubuntu-latest`).
+- **In-game (integration)** — engine-coupled paths; run live with **dev mode** on via the dedicated
+  **OmniHub Tests** interaction option (`data/scripts/entity/merchants/omnihubtests.lua`), a separate
+  window kept out of the trade UI. Both the option and the `runTests` RPC are gated on
+  `GameSettings().devMode`.
 
-- **In-game (integration) tests** — engine-coupled paths (`secure`/`restore` round-trip, `rebuild`,
-  `computeTimeToProduce` against real `goods`). Run live with **dev mode** on: interact with an
-  OmniHub station → **Tests** tab → *Run Pure / Run Integration / Run All*. Results show in the tab
-  and are echoed to chat and the server log. Integration tests snapshot station state via `secure()`
-  and restore it afterwards, leaving the station unchanged. The Tests tab and the server-side
-  `runTests` RPC are both gated on `GameSettings().devMode`.
-
-When changing pure logic in `production.lua`/`config.lua`/`moduledefs.lua`, run the off-engine
+When changing pure logic (`production.lua`/`config.lua`/`moduledefs.lua`/…), run the off-engine
 suite before deploying. Add new pure suites under `suites/` and list them in `registry.lua`.
 
 ## Development Notes
 
 - Lua scripts are interpreted directly by the Avorion engine — there is no compile step for the mod itself.
-- The Avorion scripting API is documented in `$AVORION_DATA_DIR/scripts/`.
+- The Avorion scripting API: grep `stubs/generated/*.lua` first (see EmmyLua Stubs above); the
+  shipped built-in scripts live in `$AVORION_DATA_DIR/scripts/` for reference examples.
 - Scripts run in a sandboxed Lua 5.4 environment; standard libraries are partially available.
 - Server-side and client-side scripts are separate; network communication uses `invokeServerFunction` (client→server), `invokeClientFunction` (server→specific client), and `broadcastInvokeClientFunction` (server→all clients). Functions must be marked with `callable(namespace, "funcName")` at file scope to be remotely invocable.
 

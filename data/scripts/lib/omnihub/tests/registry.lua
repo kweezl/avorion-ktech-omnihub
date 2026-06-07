@@ -2,7 +2,8 @@ package.path = package.path .. ";data/scripts/lib/?.lua"
 
 -- namespace OmniHubTestRegistry
 -- Catalog of test suites, tagged pure (engine-independent) vs integration (needs the live engine).
--- The off-engine runner loads only "pure"; the in-game Tests tab can load either set.
+-- The off-engine runner loads only "pure"; the in-game OmniHub Tests window can run any
+-- category: "pure", "integration", or "all".
 OmniHubTestRegistry = {}
 
 -- Suite names map to data/scripts/lib/omnihub/tests/suites/<name>.lua, each returning

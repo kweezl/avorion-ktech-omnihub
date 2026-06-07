@@ -1,0 +1,23 @@
+name: tests
+
+# Off-engine (pure) test suite. Runs the same suites the game's pure category runs,
+# with engine globals mocked (tests/mocks/engine.lua). No Avorion install needed.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pure-tests:
+    runs-on: ubuntu-latest  # free GitHub-hosted runner
+    steps:
+      - uses: actions/checkout@v4  # official action
+
+      - name: Install Lua 5.4
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+
+      - name: Run pure test suite
+        run: lua5.4 tests/run.lua  # exits non-zero on any failure
