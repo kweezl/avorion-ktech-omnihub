@@ -4,6 +4,7 @@ local OmniHubTest       = include("lib/omnihub/tests/framework")
 local OmniHubModuleDefs = include("lib/omnihub/moduledefs")
 local OmniHubModuleItem = include("lib/omnihub/moduleitem")
 local OmniHubProduction = include("lib/omnihub/production")
+local OmniHubMaxLimit = include("lib/omnihub/maxlimit")
 local OmniHubConfig = include("lib/omnihub/config")
 local OmniHubSupplierStock = include("lib/omnihub/supplierstock")
 
@@ -218,6 +219,51 @@ return function(runner)
         eq(heldAfterInst, origHeld + added - delta, "inventory dropped by exactly the installed amount")
         eq(instAfterUn, preInstalled,   "uninstall returned to the starting installed count")
         eq(heldAfterUn, origHeld + added, "all installed modules returned to inventory")
+    end)
+
+    -- End-to-end through the real applyHubConfig RPC handler with max-limit params. This is the path
+    -- that threw `attempt to call global 'clamp'` — the handler running at all proves clamp is in
+    -- scope. Also verifies the per-hub limits persist (secure), prodCycles is floored to 1, and the
+    -- live getMaxStock override reflects the pure max limit. Owner-gated; skips cleanly if not owner.
+    runner:test("applyHubConfig persists + applies max-limit params", function()
+        if not callingPlayer then
+            print("[OmniHubTest] integration: skipping applyHubConfig — no calling player"); return
+        end
+        local snapshot = OmniHub.secure()
+        local key   = firstCatalogKey()
+        local gname = producedGoodName(key)
+
+        OmniHub.restore({ installed = { [key] = 1 }, productionProgress = {}, traderCooldown = 0,
+                          sellEnabled = {}, buyEnabled = {}, tradingData = snapshot.tradingData })
+
+        -- prodCycles = 0 must floor to 1 (0 would silently halt production); buyLimit = 0 is allowed.
+        OmniHub.applyHubConfig({
+            activelyRequest = true, activelySell = true,
+            deliveredIds = {}, deliveringIds = {},
+            limitBuy = 0, limitBase = 200, limitCycles = 0,
+        })
+
+        local lim = OmniHub.secure().maxLimit
+        if not lim or lim.prodBase ~= 200 then
+            print("[OmniHubTest] integration: skipping applyHubConfig assertions — not applied (not station owner?)")
+            OmniHub.restore(snapshot)
+            return
+        end
+
+        eq(lim.buyLimit,   0,   "buyLimit = 0 allowed")
+        eq(lim.prodBase,   200, "prodBase applied")
+        eq(lim.prodCycles, 1,   "prodCycles floored to a minimum of 1")
+
+        -- The live getMaxStock override must match the pure max limit for the produced good.
+        if gname then
+            local expected = OmniHubMaxLimit.compute(
+                OmniHubProduction.aggregate({ [key] = 1 }, OmniHubModuleDefs.resolveRecipe),
+                {}, { buyLimit = 0, prodBase = 200, prodCycles = 1 })
+            eq(OmniHub.getMaxStock({ name = gname }), expected[gname],
+                "getMaxStock reflects the max-limit cache for the produced good")
+        end
+
+        OmniHub.restore(snapshot)
     end)
 
     runner:test("secure/restore preserves marks, stats and transfer selections", function()

@@ -28,13 +28,67 @@ function OmniHubUIStatistics.new(tab, size)
     self.hourLabel = tab:createLabel(Rect(vec2(pad, 34), vec2(pad + w - 10, 56)), "", 14)
     self.hourLabel:setRightAligned()
 
-    local hdr = tab:createLabel(vec2(pad, 74), "Recent transactions"%_t, 13)
-    hdr.bold = true
+    -- Storage summary line (used / reserved volume vs capacity); turns red when reservations overflow.
+    self.storageSummary = tab:createLabel(vec2(pad, 70), "", 13)
+    self.storageSummary.bold = true
 
-    self.frame = tab:createScrollFrame(Rect(vec2(pad, 96), vec2(pad + w, h)))
+    -- Split the area below into storage (top) and transactions (bottom).
+    local areaTop, mid = 92, math.floor(92 + (h - 92) * 0.5)
+    self.storageRows = {}
+
+    local sHdr = tab:createLabel(vec2(pad, areaTop), "Max Limit (units, volume)"%_t, 13)
+    sHdr.bold = true
+    self.storageFrame = tab:createScrollFrame(Rect(vec2(pad, areaTop + 20), vec2(pad + w, mid - 6)))
+    self.storageFrame.scrollSpeed = 30
+
+    local hdr = tab:createLabel(vec2(pad, mid), "Recent transactions"%_t, 13)
+    hdr.bold = true
+    self.frame = tab:createScrollFrame(Rect(vec2(pad, mid + 20), vec2(pad + w, h)))
     self.frame.scrollSpeed = 30
 
     return self
+end
+
+-- setStorage(storage) where storage = OmniHubStorage.summarize(...) result. Renders the summary line
+-- and one row per reserving good (current/reserved units + volume).
+function OmniHubUIStatistics:setStorage(storage)
+    storage = storage or { goods = {}, totalCurrentVol = 0, totalLimitVol = 0, capacity = 0, over = false }
+
+    self.storageSummary.caption = string.format("Storage: %d used / %d limit  (capacity %d)",
+        math.floor(storage.totalCurrentVol or 0), math.floor(storage.totalLimitVol or 0),
+        math.floor(storage.capacity or 0))
+    self.storageSummary.color = storage.over and ColorRGB(1.0, 0.5, 0.5) or ColorRGB(0.8, 0.8, 0.8)
+
+    self.storageRows = OmniHubUICommon.clearRows(self.storageRows)
+
+    local rowH, pad = 18, 4
+    local width = self.storageFrame.size.x - pad * 2
+    local list = storage.goods or {}
+
+    if storage.over then
+        local warn = self.storageFrame:createLabel(vec2(pad, pad),
+            "Cargo too small for all max limits — some production may stall. Add cargo space."%_t, 12)
+        warn.size = vec2(width, rowH); warn.color = ColorRGB(1.0, 0.6, 0.6)
+        self.storageRows[#self.storageRows + 1] = { warn }
+    end
+
+    if #list == 0 then
+        local empty = self.storageFrame:createLabel(vec2(pad, pad + (storage.over and (rowH + 2) or 0)),
+            "No goods have a max limit yet."%_t, 12)
+        empty.size = vec2(width, rowH)
+        self.storageRows[#self.storageRows + 1] = { empty }
+        return
+    end
+
+    local base = storage.over and 1 or 0  -- shift rows down past the warning line
+    for i, g in ipairs(list) do
+        local y = pad + (base + i - 1) * (rowH + 2)
+        local text = string.format("%s   %d / %d u   (%d / %d vol)",
+            tostring(g.name or "?"), g.current or 0, g.limit or 0, g.currentVol or 0, g.limitVol or 0)
+        local label = self.storageFrame:createLabel(vec2(pad, y), text, 12)
+        label.size = vec2(width, rowH); label:setLeftAligned()
+        self.storageRows[#self.storageRows + 1] = { label }
+    end
 end
 
 -- set(lifetime, lastHour, txns) where txns = { {kind, good, amount, price, partner}, ... } newest-first.

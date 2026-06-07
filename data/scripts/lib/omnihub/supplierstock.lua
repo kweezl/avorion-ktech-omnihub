@@ -54,4 +54,16 @@ function OmniHubSupplierStock.pageSlice(total, perPage, page)
     return itemStart, itemEnd, page
 end
 
+-- Maps a clicked Buy-tab LINE (1-based, within the current page) to its index in the FULL soldItems
+-- list, or nil if it lands outside the stock. The vanilla Buy button only knows the line it sits on;
+-- with pagination the real item is soldItems[page*perPage + line - 1]. Shares pageSlice's clamping so
+-- it always agrees with what updateSellGui rendered. nil = empty/out-of-range line (buy nothing).
+function OmniHubSupplierStock.lineToItemIndex(total, perPage, page, lineIndex)
+    if not lineIndex or lineIndex < 1 or total <= 0 then return nil end
+    local itemStart = OmniHubSupplierStock.pageSlice(total, perPage, page)
+    local idx = itemStart + lineIndex - 1
+    if idx < 1 or idx > total then return nil end
+    return idx
+end
+
 return OmniHubSupplierStock

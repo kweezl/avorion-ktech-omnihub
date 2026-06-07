@@ -16,6 +16,8 @@ local OmniHubProduction = include("production")
 local OmniHubTrading = include("trading")
 local OmniHubStats = include("stats")
 local OmniHubRates = include("rates")
+local OmniHubMaxLimit = include("maxlimit")
+local OmniHubStorage = include("storage")
 local OmniHubSupplierStock = include("supplierstock")  -- pure pageSlice (clamp/bounds) for buy/sell paging
 local Dialog = include("dialogutility")
 
@@ -83,6 +85,38 @@ local deliveringErrors    = {}
 -- nil when no factory modules are installed.
 local aggregatedProduction = nil
 
+-- Per-good max-limit cache (UNITS), recomputed only on module/config change via
+-- OmniHub.recomputeMaxLimits (see lib/omnihub/maxlimit.lua) — never per tick. Reassigned
+-- wholesale on recompute; the trader.getMaxStock closure below reads it through the upvalue, so the
+-- reassignment is visible there.
+local maxLimitByGood = {}
+
+-- Per-hub reservation tuning, persisted via secure/restore and edited in the Configure tab.
+-- buyLimit = flat reserve for buy-marked passthrough goods; produced/consumed goods reserve
+-- prodBase * prodCycles * perCycleAmount. See maxlimit.lua for the role resolution.
+local MAXLIMIT_DEFAULTS = { buyLimit = 1000, prodBase = 200, prodCycles = 1 }
+local hubMaxLimit = { buyLimit = MAXLIMIT_DEFAULTS.buyLimit,
+                     prodBase       = MAXLIMIT_DEFAULTS.prodBase,
+                     prodCycles     = MAXLIMIT_DEFAULTS.prodCycles }
+
+-- Reservation-based max stock for EVERY trade path: auto-buy caps, getInitialGoods, the
+-- player->station sell cap, and production's result gate (via the OmniHub.getMaxStock wrapper). Mirrors
+-- vanilla factory.lua:99, which likewise overrides trader.getMaxStock. We override the TRADER method
+-- (not just the OmniHub.getMaxStock namespace wrapper) so tradingmanager's internal self:getMaxStock
+-- calls also honor it. Goods the hub doesn't acquire reserve 0. Manual cargo transfers into the hub
+-- bypass this entirely (they aren't trades), so owners can still overstock looted goods.
+OmniHub.trader.getMaxStock = function(self, good)
+    return maxLimitByGood[good.name] or 0
+end
+
+-- Dev-only production debug. hubDebug is the owner-set toggle (persisted; only togglable from the
+-- dev-mode-gated Configure checkbox); productionStatus[key] remembers each idle module's last
+-- canStartCycle decision so the throttled logger can explain stalls without recomputing. The logger
+-- is additionally gated on GameSettings().devMode, so a persisted flag never logs on a live server.
+local hubDebug = false
+local productionStatus = {}      -- { [moduleKey] = last canStartCycle decision } (transient)
+local DEBUG_LOG_INTERVAL = 10    -- seconds between production debug dumps
+
 OmniHub.productionCapacity = 100  -- updated by onBlockPlanChanged
 OmniHub.traderCooldown     = 0    -- countdown timer; decremented in update()
 
@@ -94,10 +128,14 @@ local base_restore  = OmniHub.restore
 local base_buyGoods  = OmniHub.buyGoods
 local base_sellGoods = OmniHub.sellGoods
 local base_receiveGoods = OmniHub.receiveGoods
+local base_sendGoods    = OmniHub.sendGoods
 
 -- ────────────────────────────────────────────────────────────────
 -- Small helpers
 -- ────────────────────────────────────────────────────────────────
+-- Clamp v into [lo, hi] (nil v -> lo). Used to sanitize reservation values from the Configure tab.
+local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v or lo)) end
+
 -- Server-authoritative owner check used to gate every mutating RPC (marking, config, install/
 -- uninstall). Delegates to the vanilla helper, which keys off callingPlayer, grants the direct owner,
 -- requires the ManageStations alliance privilege for alliance-owned stations, and messages the player
@@ -210,6 +248,8 @@ function OmniHub.secure()
     data.stats              = stats
     data.chosenDelivered    = chosenDelivered
     data.chosenDelivering   = chosenDelivering
+    data.maxLimit           = hubMaxLimit
+    data.debug              = hubDebug
     data.tradingData        = OmniHub.secureTradingGoods()
     return data
 end
@@ -224,7 +264,20 @@ function OmniHub.restore(data)
     stats                  = data.stats              or OmniHubStats.new()
     chosenDelivered        = data.chosenDelivered    or {}
     chosenDelivering       = data.chosenDelivering   or {}
+    -- data.maxLimit is the current key; data.reserve (with legacy field names) is read for hubs saved
+    -- before the rename so existing playtest stations keep their configured limits.
+    local lim = data.maxLimit or {}
+    local old = data.reserve or {}
+    hubMaxLimit = {
+        buyLimit   = lim.buyLimit   or old.tradeReserve or MAXLIMIT_DEFAULTS.buyLimit,
+        prodBase   = lim.prodBase   or old.pcBase       or MAXLIMIT_DEFAULTS.prodBase,
+        prodCycles = lim.prodCycles or old.pcCycles     or MAXLIMIT_DEFAULTS.prodCycles,
+    }
+    hubDebug = data.debug or false
     if data.tradingData then OmniHub.restoreTradingGoods(data.tradingData) end
+    -- Server builds the authoritative max-limit cache and pushes it to clients (sendGoods override);
+    -- the client never has the inputs (installed/marks/hubMaxLimit arrive via RPC, not restore), so it
+    -- relies on receiveMaxLimits instead of recomputing locally.
     if onServer() then OmniHub.rebuild() end
 end
 
@@ -235,6 +288,8 @@ function OmniHub.getUpdateInterval()
     -- numPlayers is a server-only Sector property; reading it on the client
     -- yields nil ("not readable") and crashes every tick. Gate the read.
     if onServer() and Sector().numPlayers > 0 then return 1 end
+    -- Client: tick fast while our window is open so config fields commit promptly on focus-out.
+    if OmniHub.windowOpen then return 0.1 end
     return 5
 end
 
@@ -245,6 +300,7 @@ function OmniHub.update(timeStep)
     OmniHub.updateTransfers(timeStep)
     OmniHub.advanceStats(timeStep)
     OmniHubRates.advance(rates, timeStep)
+    OmniHub.debugTick(timeStep)
 end
 
 -- ────────────────────────────────────────────────────────────────
@@ -290,12 +346,16 @@ function OmniHub.tickRecipe(key, count, timeStep)
     local entity = Entity()
     local query  = {
         getNumGoods    = function(name) return OmniHub.getNumGoods(name) end,
-        getGoodSize    = function(name) return OmniHub.getGoodSize(name) end,
+        -- Read size from the goods index, NOT OmniHub.getGoodSize: the latter (TradingManager) prints
+        -- "X is neither bought nor sold" every tick for any produced/ingredient/garbage good that isn't
+        -- in the trade lists, spamming the server log. goods[name].size is defined for every good.
+        getGoodSize    = function(name) local g = goods[name]; return g and g.size or 1 end,
         getMaxStock    = function(name, size) return OmniHub.getMaxStock({name = name, size = size}) end,
         freeCargoSpace = entity.freeCargoSpace,
     }
 
     local decision = OmniHubProduction.canStartCycle(prod, count, query)
+    productionStatus[key] = decision  -- remembered for the debug logger (reason it could/couldn't start)
     if not decision.canProduce then return end
 
     for _, ing in pairs(prod.ingredients) do
@@ -304,6 +364,57 @@ function OmniHub.tickRecipe(key, count, timeStep)
     end
 
     productionProgress[key] = {progress = 0, boosted = decision.boosted}
+end
+
+-- Dev-mode production debug: throttled dump of each installed module's state — ACTIVE (mid-cycle, with
+-- progress%) or STALLED (idle, with the reason from its last canStartCycle). Gated on the owner toggle
+-- AND GameSettings().devMode so it never spams a live server, and rate-limited to one dump per
+-- DEBUG_LOG_INTERVAL seconds. Output goes to the server log via print (prefixed for easy grep).
+function OmniHub.debugTick(timeStep)
+    if not onServer() then return end
+    if not hubDebug then return end
+    if not GameSettings().devMode then return end
+
+    OmniHub.debugClock = (OmniHub.debugClock or 0) + timeStep
+    if OmniHub.debugClock < DEBUG_LOG_INTERVAL then return end
+    OmniHub.debugClock = 0
+
+    local entity = Entity()
+    print(string.format("[OmniHub debug] %s (#%s) production:",
+        tostring(entity.title ~= "" and entity.title or "OmniHub"), tostring(entity.index)))
+
+    if not next(installed) then
+        print("[OmniHub debug]   (no modules installed)")
+    end
+    for key, count in pairs(installed) do
+        local def      = OmniHubModuleDefs.get(key)
+        local label    = def and def.name or key
+        local progress = productionProgress[key]
+        if progress then
+            print(string.format("[OmniHub debug]   ACTIVE  %s x%d  %d%%%s",
+                tostring(label), count, math.floor((progress.progress or 0) * 100),
+                progress.boosted and " (boosted)" or ""))
+        else
+            print(string.format("[OmniHub debug]   STALLED %s x%d  %s",
+                tostring(label), count, OmniHubProduction.describeStall(productionStatus[key])))
+        end
+    end
+
+    -- Reservation caps (the SERVER's authoritative getMaxStock). A buy-marked good's cap is what gates
+    -- how much the hub will buy (buyable = cap - stock); this is the number the client tries to show as
+    -- "stock / cap". Lets you confirm a buy-marked good (e.g. Beer) really has cap = "Buy goods reserve"
+    -- server-side, independent of any client display glitch.
+    local anyRes = false
+    for name, cap in pairs(maxLimitByGood) do
+        if cap and cap > 0 then
+            if not anyRes then
+                print("[OmniHub debug]   max limits (stock / cap):"); anyRes = true
+            end
+            print(string.format("[OmniHub debug]     %s  %d / %d",
+                tostring(name), OmniHub.getNumGoods(name), cap))
+        end
+    end
+    if not anyRes then print("[OmniHub debug]   max limits: none (no produced/consumed/buy-marked goods)") end
 end
 
 function OmniHub.computeTimeToProduce(key)
@@ -346,10 +457,44 @@ function OmniHub.rebuild()
     aggregatedProduction = agg.aggregatedProduction
     OmniHub.updateOwnSupply()
 
+    -- Reservation cache: produced/consumed goods (from agg) + buy-marked goods (lists.boughtNames).
+    -- Reuses the agg/lists already built here so the recompute is free on this path.
+    maxLimitByGood = OmniHubMaxLimit.compute(agg, lists.boughtNames, hubMaxLimit)
+
     for key in pairs(installed) do
         timeToProduce[key] = OmniHub.computeTimeToProduce(key)
     end
 end
+
+-- Recompute the SERVER's authoritative max-limit cache from installed + marks + hubMaxLimit, for when
+-- tuning changes but rebuild() isn't otherwise run (the Configure tab). rebuild() does the same inline.
+-- Server-only: the client gets the cache via the sendGoods push below, not by recomputing (it lacks the
+-- inputs — they arrive over RPC, not restore).
+function OmniHub.recomputeMaxLimits()
+    if not onServer() then return end
+    local agg   = OmniHubProduction.aggregate(installed, OmniHubModuleDefs.resolveRecipe)
+    local lists = OmniHubTrading.buildTradeLists(sellEnabled, buyEnabled)
+    maxLimitByGood = OmniHubMaxLimit.compute(agg, lists.boughtNames, hubMaxLimit)
+end
+
+-- Push the authoritative per-good max-limit map to one client. The map is the ONLY thing the client
+-- needs to render the stock column (amount/getMaxStock) correctly, and it's small, so a targeted push
+-- updates only what changed — no full goods re-pull.
+function OmniHub.sendMaxLimitsTo(player)
+    if onServer() and player then
+        invokeClientFunction(player, "receiveMaxLimits", maxLimitByGood)
+    end
+end
+
+-- The vanilla buy/sell GUI renders each row's stock as amount/getMaxStock(good) ON THE CLIENT, and our
+-- getMaxStock reads maxLimitByGood — which only the server computes. So when the client pulls the goods
+-- (requestGoods -> server sendGoods -> client receiveGoods), piggyback the map onto the same response.
+-- Wrapping sendGoods covers window open, tab refresh, and post-change pulls without a separate RPC.
+function OmniHub.sendGoods(...)
+    if base_sendGoods then base_sendGoods(...) end
+    if callingPlayer then OmniHub.sendMaxLimitsTo(Player(callingPlayer)) end
+end
+callable(OmniHub, "sendGoods")
 
 -- Tags each traded good with its regional supply/demand role so getBuyPrice/getSellPrice and the
 -- economy simulation price it correctly. Mirrors factory.lua:485-499.
@@ -491,10 +636,30 @@ end
 
 function OmniHub.sendStats()
     if not onServer() then return end
+    if not callerIsOwner() then return end  -- profit/trades/storage are owner-only
     invokeClientFunction(Player(callingPlayer), "receiveStats",
-        OmniHubStats.lifetimeProfit(stats), OmniHubStats.lastHourProfit(stats), OmniHubStats.recent(stats, 10))
+        OmniHubStats.lifetimeProfit(stats), OmniHubStats.lastHourProfit(stats), OmniHubStats.recent(stats, 10),
+        OmniHub.collectStorage())
 end
 callable(OmniHub, "sendStats")
+
+-- Gathers the per-good storage readout (only goods that have a max limit) for the Statistics tab. Reads
+-- current stock + good size here (engine), defers volume/total math to the pure OmniHubStorage.
+function OmniHub.collectStorage()
+    local rows = {}
+    for name, limit in pairs(maxLimitByGood) do
+        if limit and limit > 0 then
+            local g = goods[name]
+            rows[#rows + 1] = {
+                name    = name,
+                current = OmniHub.getNumGoods(name),
+                size    = (g and g.size) or 1,
+                limit   = limit,
+            }
+        end
+    end
+    return OmniHubStorage.summarize(rows, Entity().maxCargoSpace)
+end
 
 -- ────────────────────────────────────────────────────────────────
 -- Inter-station transfers
@@ -588,6 +753,7 @@ callable(OmniHub, "setPriceFactors")
 
 function OmniHub.sendHubConfig()
     if not onServer() then return end
+    if not callerIsOwner() then return end  -- config is owner-only; never leak it to a customer
     OmniHub.sendHubConfigTo(Player(callingPlayer))
 end
 callable(OmniHub, "sendHubConfig")
@@ -614,6 +780,10 @@ function OmniHub.sendHubConfigTo(player)
         deliveringIds     = keysOf(chosenDelivering),
         deliveredOptions  = delOpts,
         deliveringOptions = fetchOpts,
+        limitBuy      = hubMaxLimit.buyLimit,
+        limitBase     = hubMaxLimit.prodBase,
+        limitCycles   = hubMaxLimit.prodCycles,
+        debug             = hubDebug,
     }
     invokeClientFunction(player, "receiveHubConfig", cfg, deliveredErrors, deliveringErrors)
 end
@@ -632,6 +802,26 @@ function OmniHub.applyHubConfig(cfg)
 
     chosenDelivered  = OmniHub.resolveChosen(cfg.deliveredIds, candidateDelivered)
     chosenDelivering = OmniHub.resolveChosen(cfg.deliveringIds, candidateDelivering)
+
+    -- Max-limit tuning (nil-safe: a client that doesn't send these keeps the current values). floor()
+    -- keeps limits whole; clamps guard against a tampered client. buyLimit may be 0 ("don't stockpile
+    -- passthrough goods"); prodBase/prodCycles are floored at 1 because 0 would zero out every produced
+    -- good's limit and silently halt all production.
+    local limitsChanged =
+            cfg.limitBuy ~= nil or cfg.limitBase ~= nil or cfg.limitCycles ~= nil
+    hubMaxLimit.buyLimit   = math.floor(clamp(cfg.limitBuy    or hubMaxLimit.buyLimit,   0, 1000000))
+    hubMaxLimit.prodBase   = math.floor(clamp(cfg.limitBase   or hubMaxLimit.prodBase,   1, 1000000))
+    hubMaxLimit.prodCycles = math.floor(clamp(cfg.limitCycles or hubMaxLimit.prodCycles, 1, 10000))
+    if limitsChanged then
+        OmniHub.recomputeMaxLimits()
+        -- Push only the changed limit map so the open buy/sell stock column updates in place — no full
+        -- goods re-pull. (Without this, caps only refreshed on a full window reopen.)
+        OmniHub.sendMaxLimitsTo(Player(callingPlayer))
+    end
+
+    -- Debug toggle (dev-only checkbox). Only update when the client actually sent it, so config pushes
+    -- from a non-dev client (no checkbox) don't silently clear a debug session a dev started.
+    if cfg.debug ~= nil then hubDebug = cfg.debug and true or false end
 
     OmniHub.sendHubConfigTo(Player(callingPlayer))
 end
@@ -758,6 +948,7 @@ end
 -- reopen; see docs/performance-notes.md).
 function OmniHub.sendHubGoods()
     if not onServer() then return end
+    if not callerIsOwner() then return end  -- Goods tab (rates/marks) is owner-only
     OmniHub.sendHubGoodsTo(Player(callingPlayer))
 end
 callable(OmniHub, "sendHubGoods")
@@ -1066,7 +1257,18 @@ function OmniHub.onBuyNextPage()  buyPage  = buyPage  + 1; OmniHub.applyPageSlic
 function OmniHub.onSellPrevPage() sellPage = sellPage - 1; OmniHub.applyPageSlices() end
 function OmniHub.onSellNextPage() sellPage = sellPage + 1; OmniHub.applyPageSlices() end
 
+-- Client-only tick (engine calls updateClient after update). While the window is open, commit Max Limit
+-- fields that lost focus / took an Enter (pollLimitCommit), pushing the full config once per edit — no
+-- per-keystroke RPC. Defined here so it can see the client-local configUI upvalue.
+function OmniHub.updateClient(timeStep)
+    if OmniHub.windowOpen and configUI and configUI:pollLimitCommit() then
+        OmniHub.onConfigChanged()
+    end
+end
+
 function OmniHub.onShowWindow()
+    OmniHub.windowOpen = true
+
     local station = Entity()
     local player  = Player()
     local faction = Faction()
@@ -1076,36 +1278,41 @@ function OmniHub.onShowWindow()
 
     OmniHub.updateTradeTabs()
 
-    -- Mutating tabs are owner-only.
-    for _, t in ipairs({goodsTab, configTab, modulesTab}) do
+    -- Everything except Buy/Sell is owner-only — a customer sees only the trade tables.
+    for _, t in ipairs({goodsTab, statsTab, configTab, modulesTab}) do
         if isOwner then tabbedWindow:activateTab(t) else tabbedWindow:deactivateTab(t) end
     end
-    -- Statistics is visible to everyone.
 
     OmniHub.requestGoods()  -- inherited: refreshes the buy/sell tables (re-gates via receiveGoods)
     goodsDirty = false      -- just synced
-    invokeServerFunction("sendHubGoods")
-    invokeServerFunction("sendStats")
+    -- Owner-only data (Goods/Statistics/Modules/Config tabs). Non-owners get only the Buy/Sell tables.
     if isOwner then
+        invokeServerFunction("sendHubGoods")
+        invokeServerFunction("sendStats")
         invokeServerFunction("sendModuleData")
         invokeServerFunction("sendHubConfig")
     end
 end
 
 function OmniHub.onCloseWindow()
+    OmniHub.windowOpen = false
 end
 
 -- ── Client RPC handlers ──────────────────────────────────────────
 -- Full module sync: per-key installed + inventory counts (the UI merges them with the catalog).
 function OmniHub.receiveModuleData(installedCounts, inventoryCounts)
     if modulesUI then modulesUI:setCounts(installedCounts or {}, inventoryCounts or {}) end
+    -- Install/uninstall changed which goods are produced/consumed (and thus their reserve caps), so pull
+    -- fresh buy/sell goods; the sendGoods response carries the updated max-limit map.
+    OmniHub.requestGoods()
 end
 
--- Targeted delta after install/uninstall: patch the one module row + the changed Goods rows. Buy/Sell
--- is untouched (marks are explicit), and the module row set is stable, so nothing rebuilds.
-function OmniHub.receiveModuleDelta(key, installed, inventory, changedGoods)
-    if modulesUI then modulesUI:patch(key, installed or 0, inventory or 0) end
+-- Targeted delta after install/uninstall: patch the one module row + the changed Goods rows, and mark
+-- the Buy/Sell tabs stale so they re-pull (with the new max-limit caps) on next select.
+function OmniHub.receiveModuleDelta(key, installedCount, inventory, changedGoods)
+    if modulesUI then modulesUI:patch(key, installedCount or 0, inventory or 0) end
     if goodsUI then goodsUI:patch(changedGoods) end
+    goodsDirty = true
 end
 
 function OmniHub.receiveHubGoods(list)
@@ -1113,13 +1320,50 @@ function OmniHub.receiveHubGoods(list)
     if goodsUI then goodsUI:setData(OmniHub.lastGoods) end
 end
 
-function OmniHub.receiveStats(lifetime, lastHour, txns)
-    if statisticsUI then statisticsUI:set(lifetime, lastHour, txns) end
+-- Authoritative per-good max-limit caps pushed by the server alongside every goods sync (sendGoods
+-- override). Store them and repaint so the buy/sell stock column shows amount/cap instead of N/0.
+function OmniHub.receiveMaxLimits(map)
+    maxLimitByGood = map or {}
+    OmniHub.repaintTradeLines()
+end
+
+function OmniHub.receiveStats(lifetime, lastHour, txns, storage)
+    if statisticsUI then
+        statisticsUI:set(lifetime, lastHour, txns)
+        statisticsUI:setStorage(storage)
+    end
+end
+
+-- Safe property read (client): pcall guards a property that may not exist/throw; empty/nil -> nil.
+local function safeRead(obj, field)
+    if obj == nil then return nil end
+    local ok, v = pcall(function() return obj[field] end)
+    if ok and v ~= nil and v ~= "" then return v end
+    return nil
+end
+
+-- Resolves server-sent partner ENTITY IDs into display options for the config combos. The label is
+-- built entirely client-side from the live station entity, so translatedTitle/translatedName are
+-- localized (they aren't readable on the server) and no display text crossed the network. Skips ids
+-- whose station isn't present client-side; sorted by final label for stable combo order.
+local function resolvePartnerOptions(ids)
+    local out = {}
+    for _, id in ipairs(ids or {}) do
+        local station = Sector():getEntity(id)
+        if station then
+            local faction = Faction(station.factionIndex)
+            local fname   = safeRead(faction, "translatedName") or safeRead(faction, "name")
+            local title   = safeRead(station, "translatedTitle") or safeRead(station, "title")
+            out[#out + 1] = { id = id, name = OmniHubTrading.partnerLabel(title, station.name, fname) }
+        end
+    end
+    table.sort(out, function(a, b) return a.name < b.name end)
+    return out
 end
 
 function OmniHub.receiveHubConfig(cfg, dErrors, fErrors)
     if not configUI then return end
-    configUI:setOptions(cfg.deliveredOptions, cfg.deliveringOptions)
+    configUI:setOptions(resolvePartnerOptions(cfg.deliveredOptions), resolvePartnerOptions(cfg.deliveringOptions))
     configUI:apply(cfg)
     configUI:setErrors(dErrors, fErrors)
 end
@@ -1143,7 +1387,9 @@ function OmniHub.onGoodsBuyChanged(checkbox)
     if name then
         goodsUI:setEnabled(name, "buy", checkbox.checked)
         invokeServerFunction("setGoodBuy", name, checkbox.checked)
-        goodsDirty = true   -- Sell tab (boughtGoods) now stale; refreshes on tab select
+        -- Sell tab (boughtGoods) + its reserve caps now stale; the next select re-pulls goods, and the
+        -- server's sendGoods response carries the refreshed max-limit map (receiveMaxLimits).
+        goodsDirty = true
     end
 end
 
