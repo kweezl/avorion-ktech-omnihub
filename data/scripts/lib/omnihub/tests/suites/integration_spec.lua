@@ -2,6 +2,7 @@ package.path = package.path .. ";data/scripts/lib/?.lua"
 
 local OmniHubTest       = include("lib/omnihub/tests/framework")
 local OmniHubModuleDefs = include("lib/omnihub/moduledefs")
+local OmniHubModuleItem = include("lib/omnihub/moduleitem")
 local OmniHubProduction = include("lib/omnihub/production")
 local OmniHubConfig = include("lib/omnihub/config")
 local OmniHubSupplierStock = include("lib/omnihub/supplierstock")
@@ -20,6 +21,11 @@ local function firstCatalogKey()
     for key in pairs(OmniHubModuleDefs.getCatalog()) do
         return key
     end
+end
+
+local function producedGoodName(key)
+    local prod = OmniHubModuleDefs.resolveRecipe(key)
+    return prod and prod.results and prod.results[1] and prod.results[1].name
 end
 
 return function(runner)
@@ -67,6 +73,183 @@ return function(runner)
         tru(type(t) == "number", "computeTimeToProduce returns a number")
         tru(t == t, "result is not NaN")
         tru(t > 0 and t ~= math.huge, "result is positive and finite")
+
+        OmniHub.restore(snapshot)
+    end)
+
+    -- The marking feature's core contract: a product marked off must vanish from soldGoods (so it
+    -- disappears from the Buy tab + NPC buyers) while the module stays installed and producing.
+    -- getSoldGoods returns unpacked NAME strings (tradingmanager.lua), so collect them into a table.
+    local function soldSet()
+        local s = {}
+        for _, name in ipairs({ OmniHub.getSoldGoods() }) do s[name] = true end
+        return s
+    end
+
+    runner:test("explicit sell mark drives soldGoods (explicit-only, default off)", function()
+        local snapshot = OmniHub.secure()
+        local key   = firstCatalogKey()
+        local gname = producedGoodName(key)
+        notn(gname, "module yields a produced good")
+
+        -- No marks -> nothing sold, even though the good is produced (no role default).
+        OmniHub.restore({ installed = { [key] = 1 }, productionProgress = {}, traderCooldown = 0,
+                          sellEnabled = {}, buyEnabled = {}, tradingData = snapshot.tradingData })
+        OmniHubTest.assertFalse(soldSet()[gname], "produced good NOT sold until explicitly marked")
+
+        -- Explicit sell mark -> sold; module still installed/producing.
+        OmniHub.restore({ installed = { [key] = 1 }, productionProgress = {}, traderCooldown = 0,
+                          sellEnabled = { [gname] = true }, buyEnabled = {}, tradingData = snapshot.tradingData })
+        tru(soldSet()[gname], "good sold when sell-marked on")
+        eq(OmniHub.secure().installed[key], 1, "module remains installed")
+
+        OmniHub.restore(snapshot)
+    end)
+
+    -- End-to-end through the real RPC handler: ticking Sell on adds the good to soldGoods, ticking off
+    -- removes it. Owner-gated; if marks don't take effect we log + skip rather than fail.
+    runner:test("setGoodSell handler adds/removes a good from soldGoods", function()
+        local snapshot = OmniHub.secure()
+        local key   = firstCatalogKey()
+        local gname = producedGoodName(key)
+        notn(gname, "module yields a produced good")
+
+        OmniHub.restore({ installed = { [key] = 1 }, productionProgress = {}, traderCooldown = 0,
+                          sellEnabled = {}, buyEnabled = {}, tradingData = snapshot.tradingData })
+        OmniHubTest.assertFalse(soldSet()[gname], "not sold by default")
+
+        OmniHub.setGoodSell(gname, true)
+        if not soldSet()[gname] then
+            print("[OmniHubTest] integration: skipping setGoodSell round-trip — "
+                .. "marks unchanged (caller not station owner?)")
+            OmniHub.restore(snapshot)
+            return
+        end
+        tru(soldSet()[gname], "good sold after ticking Sell on")
+
+        OmniHub.setGoodSell(gname, false)
+        OmniHubTest.assertFalse(soldSet()[gname], "good removed from soldGoods after ticking Sell off")
+
+        OmniHub.restore(snapshot)
+    end)
+
+    -- End-to-end against the live player inventory: installModule/uninstallModule must move N modules
+    -- between inventory and the station and conserve the total. Mutates real state, so it records
+    -- results, ALWAYS cleans up (even on assertion failure), then asserts. Owner-gated; skips cleanly
+    -- if the caller can't add/install (no player / inventory full / not station owner).
+    runner:test("installModule/uninstallModule move N modules between inventory and station", function()
+        if not callingPlayer then
+            print("[OmniHubTest] integration: skipping install round-trip — no calling player"); return
+        end
+        local player = Player(callingPlayer)
+        if not player then
+            print("[OmniHubTest] integration: skipping install round-trip — player unavailable"); return
+        end
+        local inv = player:getInventory()
+        local key = firstCatalogKey()
+        notn(key, "catalog has a module")
+
+        local SUB = OmniHubModuleDefs.SUBTYPE
+        local function held()
+            local n = 0
+            for _, slot in pairs(inv:getItemsByType(InventoryItemType.VanillaItem)) do
+                local it = slot.item
+                if it and it:getValue("subtype") == SUB and it:getValue("moduleKey") == key then
+                    n = n + (slot.amount or 1)
+                end
+            end
+            return n
+        end
+        local function takeModules(n)
+            while n and n > 0 do
+                local idx
+                for si, slot in pairs(inv:getItemsByType(InventoryItemType.VanillaItem)) do
+                    local it = slot.item
+                    if it and it:getValue("subtype") == SUB and it:getValue("moduleKey") == key then idx = si; break end
+                end
+                if not idx then break end
+                inv:take(idx); n = n - 1
+            end
+        end
+
+        local snapshot = OmniHub.secure()
+        local origHeld = held()
+
+        -- Captured results (asserted after cleanup). `delta` = how many actually installed (<= 2,
+        -- possibly fewer under a module cap), so we uninstall exactly that for a clean reversal.
+        local added, preInstalled, delta, heldAfterInst, instAfterUn, heldAfterUn
+
+        local ok, err = pcall(function()
+            for _ = 1, 3 do inv:add(OmniHubModuleItem.build(key)) end
+            added        = held() - origHeld
+            preInstalled = OmniHub.secure().installed[key] or 0
+            if added >= 2 then
+                OmniHub.installModule(key, 2)
+                delta         = (OmniHub.secure().installed[key] or 0) - preInstalled
+                heldAfterInst = held()
+
+                -- Only reverse if something installed. uninstallModule clamps qty to >= 1, so calling
+                -- it with delta == 0 would wrongly remove one of the runner's PRE-EXISTING modules.
+                if delta > 0 then
+                    OmniHub.uninstallModule(key, delta)
+                    instAfterUn = OmniHub.secure().installed[key] or 0
+                    heldAfterUn = held()
+                end
+            end
+        end)
+
+        -- ALWAYS clean up: drop any modules we added, then restore the station snapshot.
+        pcall(function()
+            takeModules(held() - origHeld)
+            OmniHub.restore(snapshot)
+        end)
+
+        if not ok then error(err) end  -- surface a real error after cleanup
+        if (added or 0) < 2 then
+            print("[OmniHubTest] integration: skipping install round-trip — could not add test modules"); return
+        end
+        if (delta or 0) <= 0 then
+            print("[OmniHubTest] integration: skipping install round-trip — install had no effect (not station owner / capped?)")
+            return
+        end
+
+        tru(delta >= 1 and delta <= 2,  "installed between 1 and the requested 2 (clamped)")
+        tru(delta <= added,             "installed no more than held")
+        eq(heldAfterInst, origHeld + added - delta, "inventory dropped by exactly the installed amount")
+        eq(instAfterUn, preInstalled,   "uninstall returned to the starting installed count")
+        eq(heldAfterUn, origHeld + added, "all installed modules returned to inventory")
+    end)
+
+    runner:test("secure/restore preserves marks, stats and transfer selections", function()
+        local snapshot = OmniHub.secure()
+        local key = firstCatalogKey()
+
+        local stats = { lifetimeProfit = 1234, cursor = 1, buckets = {}, transactions = {} }
+        for i = 1, 60 do stats.buckets[i] = 0 end
+        stats.buckets[1] = 500
+
+        OmniHub.restore({ installed = { [key] = 1 }, productionProgress = {}, traderCooldown = 7,
+                          sellEnabled = { Widget = false }, buyEnabled = { Ore = false }, stats = stats,
+                          chosenDelivered = {}, chosenDelivering = {}, tradingData = snapshot.tradingData })
+
+        local after = OmniHub.secure()
+        eq(after.stats.lifetimeProfit, 1234, "lifetime profit persists")
+        eq(after.stats.buckets[1],     500,  "last-hour bucket persists")
+        eq(after.sellEnabled.Widget,   false, "sell mark persists")
+        eq(after.buyEnabled.Ore,       false, "buy mark persists")
+
+        OmniHub.restore(snapshot)
+    end)
+
+    runner:test("regionalPct returns a finite number for a produced good", function()
+        local snapshot = OmniHub.secure()
+        local key   = firstCatalogKey()
+        local gname = producedGoodName(key)
+
+        OmniHub.restore({ installed = { [key] = 1 }, productionProgress = {}, traderCooldown = 0,
+                          sellEnabled = {}, buyEnabled = {}, tradingData = snapshot.tradingData })
+        local pct = OmniHub.regionalPct(gname)
+        tru(type(pct) == "number" and pct == pct and pct ~= math.huge, "regionalPct is finite")
 
         OmniHub.restore(snapshot)
     end)

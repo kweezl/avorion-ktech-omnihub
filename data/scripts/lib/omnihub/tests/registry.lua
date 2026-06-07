@@ -9,11 +9,15 @@ OmniHubTestRegistry = {}
 -- a function(runner) that registers its tests.
 OmniHubTestRegistry.pure = {
     "config_spec",
+    "goodstable_spec",
     "modconfig_spec",
     "moduledefs_spec",
     "moduleitem_spec",
     "production_spec",
+    "rates_spec",
+    "stats_spec",
     "supplier_spec",
+    "trading_spec",
 }
 
 OmniHubTestRegistry.integration = {

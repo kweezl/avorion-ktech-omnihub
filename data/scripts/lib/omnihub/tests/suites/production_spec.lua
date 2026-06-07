@@ -92,6 +92,47 @@ return function(runner)
         niln(agg.aggregatedProduction, "aggregatedProduction nil")
     end)
 
+    -- ── maxRates ──────────────────────────────────────────────────────────────
+    runner:test("maxRates sums amount*count/cycleTime*60 per good", function()
+        -- recipeA: 5 ore + 2 water -> 3 plate + 1 scrap ; recipeB: 4 ore -> 1 plate
+        local tt = { A = 30, B = 60 }  -- cycle times (seconds)
+        local r = OmniHubProduction.maxRates({ A = 2, B = 3 }, resolve, tt, 15)
+        -- ore consumed: A 5*2/30*60=20  + B 4*3/60*60=12  = 32 / min
+        near(r.consumed.ore, 32)
+        -- water consumed: A 2*2/30*60 = 8 / min
+        near(r.consumed.water, 8)
+        -- plate produced: A 3*2/30*60=12 + B 1*3/60*60=3 = 15 / min
+        near(r.produced.plate, 15)
+        -- scrap (garbage) produced: A 1*2/30*60 = 4 / min
+        near(r.produced.scrap, 4)
+    end)
+
+    runner:test("maxRates falls back to minTime for missing/zero cycle time", function()
+        local r = OmniHubProduction.maxRates({ B = 1 }, resolve, { B = 0 }, 15)
+        -- B: 4 ore / 15s * 60 = 16 / min
+        near(r.consumed.ore, 16)
+    end)
+
+    -- ── clampInstall (install/uninstall quantity: requested, or fall back to actual) ──
+    runner:test("clampInstall returns the requested amount when available", function()
+        eq(OmniHubProduction.clampInstall(3, 5, math.huge), 3, "want 3, have 5 -> 3")
+    end)
+
+    runner:test("clampInstall falls back to what's available", function()
+        eq(OmniHubProduction.clampInstall(5, 2, math.huge), 2, "want 5, have 2 -> 2")
+        eq(OmniHubProduction.clampInstall(5, 0, math.huge), 0, "want 5, have 0 -> 0 (skip)")
+    end)
+
+    runner:test("clampInstall respects remaining capacity", function()
+        eq(OmniHubProduction.clampInstall(5, 5, 2), 2, "cap leaves room for 2")
+        eq(OmniHubProduction.clampInstall(5, 5, 0), 0, "no capacity -> 0")
+    end)
+
+    runner:test("clampInstall never returns negative and floors", function()
+        eq(OmniHubProduction.clampInstall(5, 5, -3), 0, "negative capacity -> 0")
+        eq(OmniHubProduction.clampInstall(2.9, 5, math.huge), 2, "floored to integer")
+    end)
+
     -- ── canStartCycle ─────────────────────────────────────────────────────────
     local cycleRecipe = {
         ingredients = { { name = "ore", amount = 5, optional = 0 },
