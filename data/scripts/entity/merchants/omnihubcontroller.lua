@@ -14,6 +14,8 @@ local OmniHubModuleDefs = include("moduledefs")
 local OmniHubModuleItem = include("moduleitem")
 local OmniHubProduction = include("production")
 local OmniHubTrading = include("trading")
+local OmniHubTradingDecision = include("tradingdecision")
+local OmniHubLog = include("log")
 local OmniHubStats = include("stats")
 local OmniHubRates = include("rates")
 local OmniHubMaxLimit = include("maxlimit")
@@ -551,6 +553,9 @@ function OmniHub.requestTraders(timeStep)
     local pSeller    = OmniHub.getSellerProbability()
     local wantSeller = random():test(pSeller)
 
+    OmniHubLog.debug(hubDebug, "requestTraders: fire (wantSeller=%s, immediate=%s)",
+        tostring(wantSeller), tostring(immediate))
+
     if not wantSeller and OmniHub.trader.activelySell then
         for _, result in pairs(aggregatedProduction.results) do
             if OmniHub.trySpawnBuyer(entity, result, immediate) then return end
@@ -575,28 +580,32 @@ function OmniHub.getSellerProbability()
     return OmniHubProduction.sellerProbability(OmniHub.trader.buyPriceFactor)
 end
 
--- Mirrors factory.lua:1898
-function OmniHub.trySpawnSeller(entity, good, immediate)
-    local have    = OmniHub.getNumGoods(good.name)
-    local maximum = OmniHub.getMaxGoods(good.name)
-    if have < good.amount then
-        local amount = math.min(maximum, 500) - have
-        if immediate then amount = round(amount * 0.3) end
-        TradingUtility.spawnSeller(entity.id, getScriptPath(), good.name, amount, OmniHub, immediate)
-        return true
-    end
+-- Engine-read query the pure trade decisions read hub state through.
+local function tradeQuery()
+    return {
+        getNumGoods = function(name) return OmniHub.getNumGoods(name) end,
+        getMaxGoods = function(name) return OmniHub.getMaxGoods(name) end,
+        goodPrice   = function(name) local g = goods[name]; return g and g.price end,
+    }
 end
 
--- Mirrors factory.lua:1913
+-- Decide-then-spawn a SELLER (delivers an ingredient). The pure decision returns nil when the good
+-- isn't externally tradeable, so we no longer spawn no-op traders with a negative amount (the A2 bug).
+function OmniHub.trySpawnSeller(entity, good, immediate)
+    local decision = OmniHubTradingDecision.decideSeller(good, tradeQuery(), immediate)
+    if not decision then return end
+    OmniHubLog.debug(hubDebug, "requestTraders: seller %s x%d", decision.name, decision.amount)
+    TradingUtility.spawnSeller(entity.id, getScriptPath(), decision.name, decision.amount, OmniHub, immediate)
+    return true
+end
+
+-- Decide-then-spawn a BUYER (takes a product/garbage). nil decision -> skip (e.g. good not sold).
 function OmniHub.trySpawnBuyer(entity, good, immediate)
-    if not goods[good.name] then return end
-    local newAmount = OmniHub.getNumGoods(good.name) + good.amount
-    local maxGoods  = OmniHub.getMaxGoods(good.name)
-    local value     = newAmount * goods[good.name].price
-    if newAmount > maxGoods * 0.8 or (value > 100000 and random():test(0.3)) then
-        TradingUtility.spawnBuyer(entity.id, getScriptPath(), good.name, OmniHub, immediate)
-        return true
-    end
+    local decision = OmniHubTradingDecision.decideBuyer(good, tradeQuery(), random())
+    if not decision then return end
+    OmniHubLog.debug(hubDebug, "requestTraders: buyer %s", decision.name)
+    TradingUtility.spawnBuyer(entity.id, getScriptPath(), decision.name, OmniHub, immediate)
+    return true
 end
 
 -- ────────────────────────────────────────────────────────────────
