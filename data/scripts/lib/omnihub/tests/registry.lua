@@ -21,6 +21,7 @@ OmniHubTestRegistry.pure = {
     "stats_spec",
     "storage_spec",
     "supplier_spec",
+    "tradingdecision_spec",
     "trading_spec",
 }
 
