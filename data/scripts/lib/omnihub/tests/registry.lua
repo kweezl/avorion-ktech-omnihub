@@ -26,6 +26,7 @@ OmniHubTestRegistry.pure = {
 }
 
 OmniHubTestRegistry.integration = {
+    "autotrade_spec",
     "integration_spec",
 }
 
