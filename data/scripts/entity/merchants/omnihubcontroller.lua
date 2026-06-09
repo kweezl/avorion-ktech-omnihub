@@ -23,11 +23,11 @@ local OmniHubStorage = include("storage")
 local OmniHubSupplierStock = include("supplierstock")  -- pure pageSlice (clamp/bounds) for buy/sell paging
 local Dialog = include("dialogutility")
 
--- Server-only libraries (transfers touches Sector()/Entity(); FactoryMap drives supply-demand types).
-local OmniHubTransfers, FactoryMap
+-- Server-only library (FactoryMap drives supply-demand types). Touches Sector()/Entity(), so it is
+-- only included in the server VM.
+local FactoryMap
 if onServer() then
-    OmniHubTransfers = include("transfers")
-    FactoryMap       = include("factorymap")
+    FactoryMap = include("factorymap")
 end
 
 -- Client-only UI tab modules (presentation; no server calls or domain math).
@@ -48,7 +48,6 @@ OmniHub = TradingAPI:CreateNamespace()
 -- ────────────────────────────────────────────────────────────────
 local MIN_CARGO_BAY = 25000
 local MIN_TIME_TO_PRODUCE = 15.0  -- seconds, matches factory.lua
-local SECTOR_TRADE_INTERVAL = 6   -- seconds between non-docked inter-station transfers (factory.lua)
 local PRICE_MIN, PRICE_MAX = 0.8, 1.2  -- ±20% base-price slider range
 
 -- ────────────────────────────────────────────────────────────────
@@ -70,16 +69,6 @@ local stats = OmniHubStats.new()
 -- Actual production/consumption throughput tracker (trailing ~60s window) for the Goods tab's
 -- "actual/max" rates. Transient runtime state — not persisted; it re-fills as production runs.
 local rates = OmniHubRates.new()
-
--- Inter-station transfer config + scratch. chosen* are the player's selected partner stations
--- ({ [idString] = { {good, script}, ... } }); candidate* are the full sector scan used to resolve a
--- combo selection back to its trades; *Errors are surfaced in the config tab.
-local chosenDelivered     = {}
-local chosenDelivering    = {}
-local candidateDelivered  = {}
-local candidateDelivering = {}
-local deliveredErrors     = {}
-local deliveringErrors    = {}
 
 -- Aggregated production table: single merged recipe across all installed factory modules,
 -- with ingredient/result/garbage amounts summed and scaled by module count.
@@ -253,8 +242,6 @@ function OmniHub.secure()
     data.sellEnabled        = sellEnabled
     data.buyEnabled         = buyEnabled
     data.stats              = stats
-    data.chosenDelivered    = chosenDelivered
-    data.chosenDelivering   = chosenDelivering
     data.maxLimit           = hubMaxLimit
     data.debug              = hubDebug
     data.tradingData        = OmniHub.secureTradingGoods()
@@ -269,8 +256,6 @@ function OmniHub.restore(data)
     sellEnabled            = data.sellEnabled        or {}
     buyEnabled             = data.buyEnabled         or {}
     stats                  = data.stats              or OmniHubStats.new()
-    chosenDelivered        = data.chosenDelivered    or {}
-    chosenDelivering       = data.chosenDelivering   or {}
     -- data.maxLimit is the current key; data.reserve (with legacy field names) is read for hubs saved
     -- before the rename so existing playtest stations keep their configured limits.
     local lim = data.maxLimit or {}
@@ -289,7 +274,7 @@ function OmniHub.restore(data)
 end
 
 -- ────────────────────────────────────────────────────────────────
--- Update loop (production + trader spawning + transfers + stats)
+-- Update loop (production + trader spawning + stats)
 -- ────────────────────────────────────────────────────────────────
 function OmniHub.getUpdateInterval()
     -- numPlayers is a server-only Sector property; reading it on the client
@@ -304,7 +289,6 @@ function OmniHub.update(timeStep)
     if not onServer() then return end
     OmniHub.runProductionCycles(timeStep)
     OmniHub.requestTraders(timeStep)
-    OmniHub.updateTransfers(timeStep)
     OmniHub.advanceStats(timeStep)
     OmniHubRates.advance(rates, timeStep)
     OmniHub.debugTick(timeStep)
@@ -687,41 +671,6 @@ function OmniHub.collectStorage()
 end
 
 -- ────────────────────────────────────────────────────────────────
--- Inter-station transfers
--- ────────────────────────────────────────────────────────────────
-
-function OmniHub.updateTransfers(timeStep)
-    if not aggregatedProduction then return end
-    if not (next(chosenDelivered) or next(chosenDelivering)) then return end
-
-    OmniHub.tradeClock = (OmniHub.tradeClock or 0) + timeStep
-    local dockedOnly = true
-    if OmniHub.tradeClock >= SECTOR_TRADE_INTERVAL then
-        OmniHub.tradeClock = OmniHub.tradeClock - SECTOR_TRADE_INTERVAL
-        dockedOnly = false
-    end
-
-    local volume = OmniHubConfig.get("transportVolume")
-    local hub = {
-        getSoldGoodByName = OmniHub.getSoldGoodByName,
-        getStock          = OmniHub.getStock,
-        decreaseGoods     = OmniHub.decreaseGoods,
-        recordTxn         = function(t) OmniHubStats.record(stats, t) end,
-    }
-    deliveredErrors  = OmniHubTransfers.deliver(hub, chosenDelivered, volume, dockedOnly)
-    deliveringErrors = OmniHubTransfers.fetch(hub, chosenDelivering, volume, dockedOnly)
-end
-
--- Resolves a list of selected partner ids back to their trade lists from the last sector scan.
-function OmniHub.resolveChosen(ids, candidates)
-    local chosen = {}
-    for _, id in ipairs(ids or {}) do
-        if id and candidates[id] then chosen[id] = candidates[id] end
-    end
-    return chosen
-end
-
--- ────────────────────────────────────────────────────────────────
 -- Per-good sell/buy marks (owner-gated)
 -- ────────────────────────────────────────────────────────────────
 
@@ -784,33 +733,17 @@ end
 callable(OmniHub, "sendHubConfig")
 
 function OmniHub.sendHubConfigTo(player)
-    -- Refresh the candidate partner scan so the combos list reachable stations and a later selection
-    -- resolves to real trades.
-    local del, fetch, delOpts, fetchOpts = OmniHubTransfers.collectPartners(aggregatedProduction)
-    candidateDelivered  = del
-    candidateDelivering = fetch
-
-    local function keysOf(map)
-        local out = {}
-        for id in pairs(map) do out[#out + 1] = id end
-        return out
-    end
-
     local cfg = {
-        activelyRequest   = OmniHub.trader.activelyRequest,
-        activelySell      = OmniHub.trader.activelySell,
-        priceFactorBuy    = OmniHub.trader.buyPriceFactor,
-        priceFactorSell   = OmniHub.trader.sellPriceFactor,
-        deliveredIds      = keysOf(chosenDelivered),
-        deliveringIds     = keysOf(chosenDelivering),
-        deliveredOptions  = delOpts,
-        deliveringOptions = fetchOpts,
-        limitBuy      = hubMaxLimit.buyLimit,
-        limitBase     = hubMaxLimit.prodBase,
-        limitCycles   = hubMaxLimit.prodCycles,
-        debug             = hubDebug,
+        activelyRequest = OmniHub.trader.activelyRequest,
+        activelySell    = OmniHub.trader.activelySell,
+        priceFactorBuy  = OmniHub.trader.buyPriceFactor,
+        priceFactorSell = OmniHub.trader.sellPriceFactor,
+        limitBuy        = hubMaxLimit.buyLimit,
+        limitBase       = hubMaxLimit.prodBase,
+        limitCycles     = hubMaxLimit.prodCycles,
+        debug           = hubDebug,
     }
-    invokeClientFunction(player, "receiveHubConfig", cfg, deliveredErrors, deliveringErrors)
+    invokeClientFunction(player, "receiveHubConfig", cfg)
 end
 
 function OmniHub.applyHubConfig(cfg)
@@ -819,14 +752,11 @@ function OmniHub.applyHubConfig(cfg)
     if not cfg then return end
 
     -- Price factors are owned by the sliders (setPriceFactors); applyHubConfig only handles the
-    -- active-trade flags and the inter-station transfers.
+    -- active-trade flags.
     OmniHub.trader.buyFromOthers   = true
     OmniHub.trader.sellToOthers    = true
     OmniHub.trader.activelyRequest = cfg.activelyRequest and true or false
     OmniHub.trader.activelySell    = cfg.activelySell and true or false
-
-    chosenDelivered  = OmniHub.resolveChosen(cfg.deliveredIds, candidateDelivered)
-    chosenDelivering = OmniHub.resolveChosen(cfg.deliveringIds, candidateDelivering)
 
     -- Max-limit tuning (nil-safe: a client that doesn't send these keeps the current values). floor()
     -- keeps limits whole; clamps guard against a tampered client. buyLimit may be 0 ("don't stockpile
@@ -1359,38 +1289,9 @@ function OmniHub.receiveStats(lifetime, lastHour, txns, storage)
     end
 end
 
--- Safe property read (client): pcall guards a property that may not exist/throw; empty/nil -> nil.
-local function safeRead(obj, field)
-    if obj == nil then return nil end
-    local ok, v = pcall(function() return obj[field] end)
-    if ok and v ~= nil and v ~= "" then return v end
-    return nil
-end
-
--- Resolves server-sent partner ENTITY IDs into display options for the config combos. The label is
--- built entirely client-side from the live station entity, so translatedTitle/translatedName are
--- localized (they aren't readable on the server) and no display text crossed the network. Skips ids
--- whose station isn't present client-side; sorted by final label for stable combo order.
-local function resolvePartnerOptions(ids)
-    local out = {}
-    for _, id in ipairs(ids or {}) do
-        local station = Sector():getEntity(id)
-        if station then
-            local faction = Faction(station.factionIndex)
-            local fname   = safeRead(faction, "translatedName") or safeRead(faction, "name")
-            local title   = safeRead(station, "translatedTitle") or safeRead(station, "title")
-            out[#out + 1] = { id = id, name = OmniHubTrading.partnerLabel(title, station.name, fname) }
-        end
-    end
-    table.sort(out, function(a, b) return a.name < b.name end)
-    return out
-end
-
-function OmniHub.receiveHubConfig(cfg, dErrors, fErrors)
+function OmniHub.receiveHubConfig(cfg)
     if not configUI then return end
-    configUI:setOptions(resolvePartnerOptions(cfg.deliveredOptions), resolvePartnerOptions(cfg.deliveringOptions))
     configUI:apply(cfg)
-    configUI:setErrors(dErrors, fErrors)
 end
 
 -- ── Client event handlers (engine resolves these by name) ────────

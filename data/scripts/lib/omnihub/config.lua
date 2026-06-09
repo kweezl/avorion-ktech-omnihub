@@ -81,15 +81,6 @@ OmniHubConfig.schema = {
         min         = 10,
         max         = 600,
     },
-    {
-        key         = "transportVolume",
-        type        = "number",
-        title       = "Transport volume",
-        description = "Goods volume moved per inter-station transfer tick (deliver products / fetch resources).",
-        default     = 20,
-        min         = 1,
-        max         = 1000,
-    },
 }
 
 -- Append the allowed range + default to each option's description, so the MCM input fields make the

@@ -2,13 +2,11 @@ package.path = package.path .. ";data/scripts/lib/?.lua"
 
 -- namespace OmniHubUIConfig
 -- Client-only Configuration tab: actively-buy / actively-sell checkboxes, two base-price sliders
--- (buy resources, sell products; ±20%), and the deliver-to / fetch-from station dropdowns. Holds its
--- own widget state and exposes read()/apply()/setOptions()/setErrors() for the controller; the single
--- change handler name (opts.changeCallback) is wired by the controller to push config to the server.
+-- (buy resources, sell products; ±20%), and the per-good Max Limit fields. Holds its own widget state
+-- and exposes read()/apply() for the controller; the single change handler name (opts.changeCallback)
+-- is wired by the controller to push config to the server.
 OmniHubUIConfig = {}
 OmniHubUIConfig.__index = OmniHubUIConfig
-
-local SLOTS = 3  -- deliver / fetch dropdown slots per direction (matches vanilla)
 
 -- Maps a price factor (0.8..1.2) to slider units (-20..20) and back.
 local function factorToSlider(f) return round(((f or 1.0) - 1.0) * 100) end
@@ -59,14 +57,9 @@ end
 function OmniHubUIConfig.new(tab, size, opts)
     local self = setmetatable({}, OmniHubUIConfig)
     self.opts            = opts
-    self.deliveredCombos = {}
-    self.deliveringCombos = {}
 
-    local pad   = 10
-    local vsplit = UIVerticalSplitter(Rect(vec2(pad, pad), vec2(size.x - pad, size.y - 60)), 10, 0, 0.5)
-
-    -- ── Left: trade behaviour + pricing ──────────────────────────────────────
-    local left = UIVerticalLister(vsplit.left, 8, 0)
+    local pad  = 10
+    local left = UIVerticalLister(Rect(vec2(pad, pad), vec2(size.x - pad, size.y - 60)), 8, 0)
 
     self.activeBuyCheck = tab:createCheckBox(Rect(), "Actively buy resources"%_t, opts.changeCallback)
     left:placeElementTop(self.activeBuyCheck)
@@ -127,52 +120,7 @@ function OmniHubUIConfig.new(tab, size, opts)
     self.limitBoxes     = { self.limitBuyBox, self.limitBaseBox, self.limitCyclesBox }
     self.limitCommitted = { self.limitBuyBox.text, self.limitBaseBox.text, self.limitCyclesBox.text }
 
-    -- ── Right: inter-station transfers ───────────────────────────────────────
-    local right = UIVerticalLister(vsplit.right, 6, 0)
-
-    local dlabel = tab:createLabel(Rect(), "Deliver products to stations:"%_t, 12)
-    right:placeElementTop(dlabel); dlabel.centered = true
-    for _ = 1, SLOTS do
-        local combo = tab:createValueComboBox(Rect(), opts.changeCallback)
-        right:placeElementTop(combo)
-        self.deliveredCombos[#self.deliveredCombos + 1] = combo
-    end
-    self.deliveredError = tab:createLabel(Rect(), "", 12)
-    right:placeElementTop(self.deliveredError)
-    self.deliveredError.color = ColorRGB(1, 1, 0)
-
-    right:nextRect(14)
-
-    local flabel = tab:createLabel(Rect(), "Fetch resources from stations:"%_t, 12)
-    right:placeElementTop(flabel); flabel.centered = true
-    for _ = 1, SLOTS do
-        local combo = tab:createValueComboBox(Rect(), opts.changeCallback)
-        right:placeElementTop(combo)
-        self.deliveringCombos[#self.deliveringCombos + 1] = combo
-    end
-    self.deliveringError = tab:createLabel(Rect(), "", 12)
-    right:placeElementTop(self.deliveringError)
-    self.deliveringError.color = ColorRGB(1, 1, 0)
-
     return self
-end
-
--- Populates the combo option lists from server-supplied partner option arrays
--- ({ {id, name}, ... }). Preserves current selections where still valid.
-function OmniHubUIConfig:setOptions(deliveredOptions, deliveringOptions)
-    local function fill(combos, options)
-        for _, combo in ipairs(combos) do
-            local prev = combo.selectedValue
-            combo:clear()
-            combo:addEntry(nil, "- None -"%_t)
-            for _, o in ipairs(options or {}) do
-                combo:addEntry(o.id, o.name)
-            end
-            if prev then combo:setSelectedValueNoCallback(prev) end
-        end
-    end
-    fill(self.deliveredCombos, deliveredOptions)
-    fill(self.deliveringCombos, deliveringOptions)
 end
 
 -- Applies a server config table to the widgets (no callbacks fire).
@@ -185,16 +133,6 @@ function OmniHubUIConfig:apply(cfg)
     self.buyPriceSlider:setValueNoCallback(factorToSlider(cfg.priceFactorBuy))
     self.sellPriceSlider:setValueNoCallback(factorToSlider(cfg.priceFactorSell))
     self:refreshPriceLabels()
-
-    local function applySelection(combos, ids)
-        ids = ids or {}
-        for i, combo in ipairs(combos) do
-            if ids[i] then combo:setSelectedValueNoCallback(ids[i])
-            else combo:setSelectedIndexNoCallback(0) end
-        end
-    end
-    applySelection(self.deliveredCombos, cfg.deliveredIds)
-    applySelection(self.deliveringCombos, cfg.deliveringIds)
 
     if self.limitBoxes then
         -- Skips any field currently being typed in (setLimitBox), so the server echo never stomps it.
@@ -217,13 +155,6 @@ end
 -- Reads the current widget state into a config table for the server.
 function OmniHubUIConfig:read()
     self:refreshPriceLabels()
-    local function selectedIds(combos)
-        local ids = {}
-        for _, combo in ipairs(combos) do
-            ids[#ids + 1] = combo.selectedValue   -- nil for "- None -" is simply skipped
-        end
-        return ids
-    end
     -- Explicit boolean (NOT `check and check.checked or nil`): when the box is UNchecked, `checked` is
     -- false and the `and/or` trick collapses to nil, which the server reads as "keep current" — so the
     -- toggle could never be turned off. nil only when there's no checkbox (non-dev client).
@@ -234,24 +165,12 @@ function OmniHubUIConfig:read()
         activelySell    = self.activeSellCheck.checked,
         priceFactorBuy  = sliderToFactor(self.buyPriceSlider.value),
         priceFactorSell = sliderToFactor(self.sellPriceSlider.value),
-        deliveredIds    = selectedIds(self.deliveredCombos),
-        deliveringIds   = selectedIds(self.deliveringCombos),
         -- tonumber("") -> nil; the server treats nil as "keep current" (nil-safe clamp).
         limitBuy    = tonumber(self.limitBuyBox.text),
         limitBase   = tonumber(self.limitBaseBox.text),
         limitCycles = tonumber(self.limitCyclesBox.text),
         debug       = debug,
     }
-end
-
--- Shows the first delivery / fetch error string (if any) under each group.
-function OmniHubUIConfig:setErrors(deliveredErrors, deliveringErrors)
-    local function first(errs)
-        for _, m in pairs(errs or {}) do if m and m ~= "" then return m end end
-        return ""
-    end
-    self.deliveredError.caption  = first(deliveredErrors)
-    self.deliveringError.caption = first(deliveringErrors)
 end
 
 return OmniHubUIConfig
