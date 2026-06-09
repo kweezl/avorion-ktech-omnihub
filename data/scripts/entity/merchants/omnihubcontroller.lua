@@ -202,6 +202,11 @@ function OmniHub.initialize()
         -- option only appears in dev mode (gated in omnihubtests.lua:interactionPossible).
         entity:addScriptOnce("data/scripts/entity/merchants/omnihubtests.lua")
 
+        -- Make roaming/economy traders recognise this hub as a trade partner, and ensure the sector's
+        -- ambient trader spawner is running (vanilla factories do the same in their initialize).
+        OmniHub.registerTradeable()
+        Sector():addScriptOnce("sector/traders.lua")
+
         OmniHub.productionCapacity = Plan():getStats().productionCapacity
     end
 end
@@ -531,6 +536,17 @@ end
 function OmniHub.regionalPct(name)
     local _, pct = OmniHub.regionalInfo(name)
     return pct
+end
+
+-- Registers our controller with TradingUtility's tradeable-script allow-list exactly once per server
+-- load. getTradeableScripts() returns the list BY REFERENCE; entries are "/basename.lua". Guarded
+-- against the double-insert an F5 script reload would otherwise cause.
+function OmniHub.registerTradeable()
+    local scripts = TradingUtility.getTradeableScripts()
+    for _, s in ipairs(scripts) do
+        if s == "/omnihubcontroller.lua" then return end
+    end
+    scripts[#scripts + 1] = "/omnihubcontroller.lua"
 end
 
 -- requestTraders: mirrors factory.lua:1828-1885.
