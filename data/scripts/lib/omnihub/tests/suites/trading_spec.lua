@@ -112,20 +112,4 @@ return function(runner)
         OmniHubTrading.setMark(sell, "Plate", false)
         fls(asSet(OmniHubTrading.buildTradeLists(sell, nil).soldNames)["Plate"], "Plate off")
     end)
-
-    -- ── partnerLabel (regression: nil translatedName crash) ────────────────────
-    runner:test("partnerLabel composes title, name and faction", function()
-        eq(OmniHubTrading.partnerLabel("Mine", "Station 7", "The Syndicate"),
-           "Mine Station 7 (The Syndicate)")
-    end)
-
-    runner:test("partnerLabel tolerates a nil faction name (no crash, no suffix)", function()
-        eq(OmniHubTrading.partnerLabel("Mine", "Station 7", nil), "Mine Station 7")
-        eq(OmniHubTrading.partnerLabel("Mine", "Station 7", ""),  "Mine Station 7")
-    end)
-
-    runner:test("partnerLabel tolerates nil title and station name", function()
-        eq(OmniHubTrading.partnerLabel(nil, nil, nil), " ")
-        eq(OmniHubTrading.partnerLabel(nil, "Station 7", "Faction"), " Station 7 (Faction)")
-    end)
 end

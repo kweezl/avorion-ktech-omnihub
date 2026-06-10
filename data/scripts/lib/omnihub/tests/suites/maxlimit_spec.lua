@@ -76,6 +76,15 @@ return function(runner)
         eq(r.Trinium, 1000, "flat buyLimit for passthrough buy good")
     end)
 
+    runner:test("SELL-marked good that is neither produced nor consumed also reserves buyLimit", function()
+        -- Regression: a sell-only non-production good previously got NO cap at all -> the UI
+        -- rendered 0/0 and getMaxGoods()==0 blocked it from NPC trading entirely (the Aluminum
+        -- case). Any EXPLICITLY traded good deserves the flat passthrough buffer.
+        local agg = OmniHubProduction.aggregate({ wheat = 1 }, resolve)
+        local r = OmniHubMaxLimit.compute(agg, { "Wheat" }, params, { "Aluminum" })
+        eq(r.Aluminum, 1000, "flat buyLimit for a sell-only passthrough good")
+    end)
+
     runner:test("a produced good reserves on production role even if not bought", function()
         -- Cattle is a result, never an ingredient -> not in boughtNames, but still reserves.
         local agg = OmniHubProduction.aggregate({ wheat = 1 }, resolve)

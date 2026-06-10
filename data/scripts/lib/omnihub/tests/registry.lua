@@ -16,6 +16,7 @@ OmniHubTestRegistry.pure = {
     "moduledefs_spec",
     "moduleitem_spec",
     "maxlimit_spec",
+    "offlinesim_spec",
     "production_spec",
     "rates_spec",
     "stats_spec",
@@ -23,6 +24,7 @@ OmniHubTestRegistry.pure = {
     "supplier_spec",
     "tradingdecision_spec",
     "trading_spec",
+    "wave_spec",
 }
 
 OmniHubTestRegistry.integration = {

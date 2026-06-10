@@ -81,6 +81,24 @@ OmniHubConfig.schema = {
         min         = 10,
         max         = 600,
     },
+    {
+        key         = "maxTradersPerWave",
+        type        = "number",
+        title       = "Max traders per wave",
+        description = "Upper limit of NPC traders spawned per trade wave; additionally capped by the hub's free docking positions.",
+        default     = 3,
+        min         = 1,
+        max         = 6,
+    },
+    {
+        key         = "offlineWaveDelayMultiplier",
+        type        = "number",
+        title       = "Offline wave delay multiplier",
+        description = "Offline trade waves run every (trader request cooldown x this) seconds, modelling the docking latency online traders pay. Higher = slower offline trading.",
+        default     = 3,
+        min         = 1,
+        max         = 10,
+    },
 }
 
 -- Append the allowed range + default to each option's description, so the MCM input fields make the

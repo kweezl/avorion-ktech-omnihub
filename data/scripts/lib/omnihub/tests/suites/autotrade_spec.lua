@@ -2,12 +2,12 @@ package.path = package.path .. ";data/scripts/lib/?.lua"
 
 local OmniHubTest       = include("lib/omnihub/tests/framework")
 local OmniHubModuleDefs = include("lib/omnihub/moduledefs")
-local TradingUtility    = include("tradingutility")
+local OmniHubStats      = include("lib/omnihub/stats")
 
 local eq   = OmniHubTest.assertEqual
 local tru  = OmniHubTest.assertTrue
-local fls  = OmniHubTest.assertFalse
 local notn = OmniHubTest.assertNotNil
+local nilq = OmniHubTest.assertNil
 
 ---@diagnostic disable: undefined-global
 
@@ -16,70 +16,119 @@ local function firstCatalogKey()
 end
 local function recipeOf(key) return OmniHubModuleDefs.resolveRecipe(key) end
 
+-- Integration suite hosted in the CONTROLLER's VM (via OmniHub.runDevTests): _G.OmniHub is the
+-- live namespace, and the dev seams (getTradingUtilityForTests / getWaveSeamsForTests) expose the
+-- exact lib instances the controller calls — patching any other copy would intercept nothing.
 return function(runner)
     runner:suite("autotrade")
 
     local OmniHub = _G.OmniHub
     if not OmniHub then
         runner:test("OmniHub namespace available", function()
-            notn(nil, "OmniHub global not found — run from a live station")
+            notn(nil, "OmniHub global not found — suite must run in the controller VM (runDevTests)")
         end)
         return
     end
 
-    -- A1: our controller is registered with the ambient trader allow-list, and the live station
-    -- resolves the trade-API methods through that "/basename.lua" entry (the spike).
-    runner:test("controller is registered as a tradeable script (A1)", function()
+    -- A1: the lib-overlay registration. Because the VFS merges our fragment into tradingutility.lua
+    -- itself, EVERY VM's copy of the lib carries the entry — asserting on the controller's instance
+    -- therefore proves what sector/traders.lua will see too.
+    runner:test("controller is in the tradeable-script allow-list (A1: lib overlay)", function()
+        local TU = OmniHub.getTradingUtilityForTests()
+        notn(TU, "controller exposes its TradingUtility instance in dev mode")
         local present = false
-        for _, s in ipairs(TradingUtility.getTradeableScripts()) do
+        for _, s in ipairs(TU.getTradeableScripts()) do
             if s == "/omnihubcontroller.lua" then present = true break end
         end
         tru(present, "/omnihubcontroller.lua is in the tradeable-script allow-list")
     end)
 
-    -- A2: drive the real spawn helpers with the spawner monkey-patched to capture calls.
-    runner:test("trySpawn* honours the pure decision (A2: no spawn for non-tradeable goods)", function()
-        local snapshot = OmniHub.secure()
-        local key   = firstCatalogKey()
-        local prod  = recipeOf(key)
-        notn(prod, "module resolves to a recipe")
-        local resultName = prod.results[1].name
+    -- A1 spike: the ambient systems call station:invokeFunction(<allow-list entry>, ...) — assert
+    -- the engine resolves our "/basename.lua" suffix to the deployed mod script on a live station.
+    runner:test("invokeFunction resolves the /basename.lua entry on the live station (A1 spike)", function()
+        local err, sells = Entity():invokeFunction("/omnihubcontroller.lua", "getSellsToOthers")
+        eq(err, 0, "invokeFunction resolved /omnihubcontroller.lua (0 = ok)")
+        notn(sells, "getSellsToOthers answered through the suffix path")
+    end)
 
-        -- Capture spawner calls instead of spawning ships.
-        local origSeller, origBuyer = TradingUtility.spawnSeller, TradingUtility.spawnBuyer
-        local calls = {}
-        TradingUtility.spawnSeller = function(_, _, name, amount) calls[#calls+1] = {kind="seller", name=name, amount=amount} end
-        TradingUtility.spawnBuyer  = function(_, _, name)         calls[#calls+1] = {kind="buyer",  name=name} end
+    -- A2 + wave model: drive the real requestTraders with the fleet seam patched to capture the
+    -- wave instead of spawning ships (and the dock cap stubbed — a test station may have 0 docks).
+    runner:test("requestTraders plans a wave honouring the pure decisions (A2 + wave)", function()
+        local seams = OmniHub.getWaveSeamsForTests()
+        notn(seams, "controller exposes its wave seams in dev mode")
+        local Fleet, Decision = seams.fleet, seams.decision
+
+        local snapshot = OmniHub.secure()
+        local key  = firstCatalogKey()
+        local prod = recipeOf(key)
+        notn(prod, "module resolves to a recipe")
+        local ingName = prod.ingredients[1] and prod.ingredients[1].name
+        notn(ingName, "recipe has an ingredient")
+
+        local origSpawn, origCount, origSize = Fleet.spawnWave, Fleet.countTraders, Decision.waveSize
+        local captured
+        Fleet.spawnWave    = function(_, manifests) captured = manifests; return #manifests end
+        Fleet.countTraders = function() return 0 end
+        Decision.waveSize  = function() return 3 end
 
         local ok, err = pcall(function()
-            local entity = Entity()
-
-            -- Case 1 (A2): result NOT marked Sell -> getMaxGoods 0 -> NO buyer, NO crash, NO negative.
+            -- Case 1 (A2): nothing marked -> nothing externally tradeable -> NO wave spawned.
             OmniHub.restore({ installed = { [key] = 1 }, productionProgress = {}, traderCooldown = 0,
                               sellEnabled = {}, buyEnabled = {}, tradingData = snapshot.tradingData })
-            calls = {}
-            OmniHub.trySpawnSeller(entity, { name = resultName, amount = 999999 }, false)
-            OmniHub.trySpawnBuyer(entity, { name = resultName, amount = 1 }, false)
-            eq(#calls, 0, "no spawn for a good that isn't externally tradeable")
+            captured = nil
+            OmniHub.requestTraders(1)
+            nilq(captured, "no wave for a hub with nothing externally tradeable")
 
-            -- Case 2: result marked Sell -> tradeable. A low-stock SELLER request yields a
-            -- NON-NEGATIVE amount (the pre-fix bug produced a negative amount here).
+            -- Case 2: ingredient marked Buy -> the wave delivers it with a positive vanilla-capped
+            -- amount (the pre-fix A2 bug produced a NEGATIVE amount on this path).
             OmniHub.restore({ installed = { [key] = 1 }, productionProgress = {}, traderCooldown = 0,
-                              sellEnabled = { [resultName] = true }, buyEnabled = {}, tradingData = snapshot.tradingData })
-            calls = {}
-            local spawned = OmniHub.trySpawnSeller(entity, { name = resultName, amount = 999999 }, false)
-            if spawned then
-                eq(#calls, 1, "exactly one seller spawn recorded")
-                eq(calls[1].kind, "seller", "it was a seller")
-                tru(calls[1].amount >= 0, "seller amount is non-negative (A2 fix): " .. tostring(calls[1].amount))
+                              sellEnabled = {}, buyEnabled = { [ingName] = true },
+                              tradingData = snapshot.tradingData })
+            captured = nil
+            OmniHub.requestTraders(1)
+            if captured then
+                local found
+                for _, manifest in ipairs(captured) do
+                    for _, d in ipairs(manifest.deliveries) do
+                        if d.name == ingName then found = d end
+                    end
+                end
+                notn(found, "wave delivers the buy-marked ingredient")
+                tru(found.amount > 0,    "delivery amount positive (A2 fix): " .. tostring(found.amount))
+                tru(found.amount <= 500, "delivery amount within the vanilla 500 cap")
             else
-                -- Acceptable: hub already full of the good (maxstock reached) -> no request. Still no crash.
-                eq(#calls, 0, "no spawn when nothing to request")
+                -- Acceptable: the live station already holds the ingredient at/above need -> the
+                -- pure decision correctly declines. Still no crash, still no wave.
+                tru(true)
             end
         end)
 
         -- Always restore patches + station, even on assertion failure.
-        TradingUtility.spawnSeller, TradingUtility.spawnBuyer = origSeller, origBuyer
+        Fleet.spawnWave, Fleet.countTraders, Decision.waveSize = origSpawn, origCount, origSize
+        pcall(function() OmniHub.restore(snapshot) end)
+        if not ok then error(err) end
+    end)
+
+    -- Docked trades (NPC tradeships, players at the trade UI) reach the stats only through the
+    -- onTradingManager* entity callbacks — regression for "traders dock but profit stays 0".
+    runner:test("docked-trade callbacks record statistics (profit-gap fix)", function()
+        local snapshot = OmniHub.secure()
+        local ok, err = pcall(function()
+            -- Swap in a FRESH stats table first: secure() returns the live stats by reference, so
+            -- mutating it before the swap would leak the fake transactions into the snapshot.
+            OmniHub.restore({ installed = {}, productionProgress = {}, traderCooldown = 0,
+                              sellEnabled = {}, buyEnabled = {}, stats = OmniHubStats.new(),
+                              tradingData = snapshot.tradingData })
+
+            OmniHub.onDockedTradeSold("Steel", 3, 4500)    -- station sold -> +4500
+            OmniHub.onDockedTradeBought("Ore", 2, 1500)    -- station bought -> -1500
+
+            local s = OmniHub.secure().stats
+            eq(s.lifetimeProfit, 3000, "sell adds, buy subtracts (total prices)")
+            eq(#s.transactions, 2, "both docked trades logged")
+            eq(s.transactions[2].kind, "buy", "latest transaction is the buy")
+            eq(s.transactions[1].good, "Steel", "sell row carries the good name")
+        end)
         pcall(function() OmniHub.restore(snapshot) end)
         if not ok then error(err) end
     end)
