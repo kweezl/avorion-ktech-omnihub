@@ -30,15 +30,27 @@ function OmniHubTests.runTests(category)
 
     category = category or "all"
 
-    local registry = include("lib/omnihub/tests/registry")
-    local runner   = registry.run(category)
-    local summary  = runner:summary()
+    -- Each namespace runs in its own Lua VM: this VM has no _G.OmniHub and holds a different copy
+    -- of every included lib, so suites that touch the live station (or monkey-patch the spawners)
+    -- MUST execute in the controller's VM. invokeFunction crosses VMs server-side and returns
+    -- plain tables; this script only renders the result.
+    local err, summary = Entity():invokeFunction(
+        "data/scripts/entity/merchants/omnihubcontroller.lua", "runDevTests", category)
+
+    local player = Player(callingPlayer)
+    if err ~= 0 or not summary then
+        print("[OmniHub] tests: could not reach the controller (invokeFunction code "
+            .. tostring(err) .. ")")
+        if player then
+            player:sendChatMessage("OmniHub"%_t, ChatMessageType.Error,
+                "Tests could not run: controller not reachable (code %1%)."%_t, err)
+        end
+        return
+    end
 
     print("[OmniHub] tests (" .. category .. "): "
         .. summary.passed .. " passed, " .. summary.failed .. " failed of " .. summary.total)
-    print(runner:format())
 
-    local player = Player(callingPlayer)
     if player then
         local msgType = (summary.failed == 0) and ChatMessageType.Information or ChatMessageType.Error
         player:sendChatMessage("OmniHub"%_t, msgType,
