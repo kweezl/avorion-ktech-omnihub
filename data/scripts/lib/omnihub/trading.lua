@@ -54,16 +54,4 @@ function OmniHubTrading.setMark(map, name, enabled)
     return map
 end
 
--- Builds an inter-station partner combo label from possibly-nil pieces. Guards every field: some
--- stations have no translatedTitle and some factions (certain AI/special owners, factionIndex 0) a
--- nil translatedName — concatenating nil here previously crashed sendHubConfig. The faction suffix is
--- only appended when a non-empty name is available.
-function OmniHubTrading.partnerLabel(title, stationName, factionName)
-    local name = (title or "") .. " " .. (stationName or "")
-    if factionName and factionName ~= "" then
-        name = name .. " (" .. factionName .. ")"
-    end
-    return name
-end
-
 return OmniHubTrading

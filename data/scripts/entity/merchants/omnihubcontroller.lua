@@ -14,6 +14,8 @@ local OmniHubModuleDefs = include("moduledefs")
 local OmniHubModuleItem = include("moduleitem")
 local OmniHubProduction = include("production")
 local OmniHubTrading = include("trading")
+local OmniHubTradingDecision = include("tradingdecision")
+local OmniHubLog = include("log")
 local OmniHubStats = include("stats")
 local OmniHubRates = include("rates")
 local OmniHubMaxLimit = include("maxlimit")
@@ -21,11 +23,12 @@ local OmniHubStorage = include("storage")
 local OmniHubSupplierStock = include("supplierstock")  -- pure pageSlice (clamp/bounds) for buy/sell paging
 local Dialog = include("dialogutility")
 
--- Server-only libraries (transfers touches Sector()/Entity(); FactoryMap drives supply-demand types).
-local OmniHubTransfers, FactoryMap
+-- Server-only libraries (FactoryMap drives supply-demand types; TraderFleet spawns/counts the
+-- wave's NPC traders). Both touch Sector()/Entity(), so they are only included in the server VM.
+local FactoryMap, OmniHubTraderFleet
 if onServer() then
-    OmniHubTransfers = include("transfers")
-    FactoryMap       = include("factorymap")
+    FactoryMap         = include("factorymap")
+    OmniHubTraderFleet = include("traderfleet")
 end
 
 -- Client-only UI tab modules (presentation; no server calls or domain math).
@@ -46,7 +49,6 @@ OmniHub = TradingAPI:CreateNamespace()
 -- ────────────────────────────────────────────────────────────────
 local MIN_CARGO_BAY = 25000
 local MIN_TIME_TO_PRODUCE = 15.0  -- seconds, matches factory.lua
-local SECTOR_TRADE_INTERVAL = 6   -- seconds between non-docked inter-station transfers (factory.lua)
 local PRICE_MIN, PRICE_MAX = 0.8, 1.2  -- ±20% base-price slider range
 
 -- ────────────────────────────────────────────────────────────────
@@ -69,15 +71,17 @@ local stats = OmniHubStats.new()
 -- "actual/max" rates. Transient runtime state — not persisted; it re-fills as production runs.
 local rates = OmniHubRates.new()
 
--- Inter-station transfer config + scratch. chosen* are the player's selected partner stations
--- ({ [idString] = { {good, script}, ... } }); candidate* are the full sector scan used to resolve a
--- combo selection back to its trades; *Errors are surfaced in the config tab.
-local chosenDelivered     = {}
-local chosenDelivering    = {}
-local candidateDelivered  = {}
-local candidateDelivering = {}
-local deliveredErrors     = {}
-local deliveringErrors    = {}
+-- A3 observation: consecutive requestTraders windows blocked by hasTraders. Transient, not
+-- persisted. A count that climbs without ever resetting implicates an orphaned tradeship (its
+-- trade_partner still set to us) wedging the request path — the suspected A3 failure mode.
+local hasTradersBlocks = 0
+
+-- Offline-director sync state (transient). needDirectorSync is raised in initialize so the FIRST
+-- update tick after a (re)load wakes/reconciles with the director and sends an immediate
+-- heartbeat — covering both fresh foundings (registration gap) and sector loads (offline result
+-- write-back), after restore() has rebuilt installed/marks/limits.
+local needDirectorSync      = false
+local directorHeartbeatClock = 0
 
 -- Aggregated production table: single merged recipe across all installed factory modules,
 -- with ingredient/result/garbage amounts summed and scaled by module count.
@@ -109,11 +113,80 @@ OmniHub.trader.getMaxStock = function(self, good)
     return maxLimitByGood[good.name] or 0
 end
 
+-- ── Server-authoritative stock display ──────────────────────────
+-- The engine gives clients a correct CARGO SNAPSHOT on sector/save load but does NOT stream live
+-- cargo changes for a station, so a client's getCargoAmount drifts behind the server while
+-- production and NPC trades run (observed: server 564, client UI/manage-tab 452). The buy/sell
+-- stock column must therefore come from the SERVER: a full per-good stock map rides along with
+-- every goods pull (receiveStockSync), and a deduplicated (name, amount) delta is broadcast
+-- whenever a trade-listed good's stock actually changes.
+local serverStock   = {}  -- client: name -> server-sent amount (display cache)
+local lastSentStock = {}  -- server: name -> last broadcast amount (dedup, saves bandwidth)
+
+if onServer() then
+    -- Wrap the TRADER methods (not the namespace wrappers) so tradingmanager's internal
+    -- self:increaseGoods/decreaseGoods calls — production, buyFromShip/sellToShip, buyGoods/
+    -- sellGoods — all emit the delta.
+    local base_traderIncrease = OmniHub.trader.increaseGoods
+    local base_traderDecrease = OmniHub.trader.decreaseGoods
+
+    local function broadcastStockDelta(trader, name)
+        local amount = trader:getNumGoods(name)
+        if lastSentStock[name] == amount then return end
+        lastSentStock[name] = amount
+        broadcastInvokeClientFunction("receiveStockDelta", name, amount)
+    end
+
+    OmniHub.trader.increaseGoods = function(self, name, delta)
+        base_traderIncrease(self, name, delta)
+        broadcastStockDelta(self, name)
+    end
+    OmniHub.trader.decreaseGoods = function(self, name, amount)
+        local removed = base_traderDecrease(self, name, amount)
+        broadcastStockDelta(self, name)
+        return removed
+    end
+else
+    -- Client: every stock read the trade UI makes (row captions, buy/sell amount clamps, vanilla's
+    -- updateSoldGoodAmount repaints) goes through trader:getNumGoods — serve it from the
+    -- server-sent cache, falling back to (possibly stale) replicated cargo until the first sync.
+    local base_traderGetNumGoods = OmniHub.trader.getNumGoods
+    OmniHub.trader.getNumGoods = function(self, name)
+        local cached = serverStock[name]
+        if cached ~= nil then return cached end
+        return base_traderGetNumGoods(self, name)
+    end
+end
+
 -- Dev-only production debug. hubDebug is the owner-set toggle (persisted; only togglable from the
 -- dev-mode-gated Configure checkbox); productionStatus[key] remembers each idle module's last
 -- canStartCycle decision so the throttled logger can explain stalls without recomputing. The logger
 -- is additionally gated on GameSettings().devMode, so a persisted flag never logs on a live server.
 local hubDebug = false
+
+-- Identity tag for every hub log line: "<title> (#<index>)". Passed as a %s ARGUMENT (never
+-- concatenated into the format string) so a station title containing '%' can't break string.format.
+local function hubTag()
+    local entity = Entity()
+    return string.format("%s (#%s)",
+        tostring(entity.title ~= "" and entity.title or "OmniHub"), tostring(entity.index))
+end
+
+-- Gated, hub-identified debug line: "[OmniHub] <title> (#<index>) <message>". The single funnel for
+-- ALL of this hub's debug output (production dump, requestTraders, A3 counter) so multi-hub server
+-- logs share one prefix and stay greppable per station. Gated on the owner toggle AND devMode
+-- (same rationale as above: a persisted flag must never spam a live server).
+local function hubLog(fmt, ...)
+    if not hubDebug then return end
+    if not GameSettings().devMode then return end
+    OmniHubLog.debug(true, "%s " .. fmt, hubTag(), ...)
+end
+
+-- UNGATED hub-identified line, same format as hubLog, for anomalies that must reach a live server's
+-- log even with debug off (security rejections, validation failures). Not for routine flow.
+local function hubWarn(fmt, ...)
+    OmniHubLog.debug(true, "%s " .. fmt, hubTag(), ...)
+end
 local productionStatus = {}      -- { [moduleKey] = last canStartCycle decision } (transient)
 local DEBUG_LOG_INTERVAL = 10    -- seconds between production debug dumps
 
@@ -127,6 +200,8 @@ local base_secure   = OmniHub.secure
 local base_restore  = OmniHub.restore
 local base_buyGoods  = OmniHub.buyGoods
 local base_sellGoods = OmniHub.sellGoods
+local base_buyFromShip = OmniHub.buyFromShip
+local base_sellToShip  = OmniHub.sellToShip
 local base_receiveGoods = OmniHub.receiveGoods
 local base_sendGoods    = OmniHub.sendGoods
 
@@ -194,11 +269,29 @@ function OmniHub.initialize()
         entity:registerCallback("onBlockPlanChanged", "onBlockPlanChanged")
         entity:registerCallback("onDestroyed", "onDestroyed")
 
+        -- Docked trades (NPC tradeships delivering/fetching, and players trading at the UI) route
+        -- through tradingmanager's buyFromShip/sellToShip — NOT the buyGoods/sellGoods we wrap for
+        -- statistics — and announce themselves only via these entity callbacks. Without them, online
+        -- NPC auto-trade works but profit/transactions stay at 0.
+        entity:registerCallback("onTradingManagerBuyFromPlayer", "onDockedTradeBought")
+        entity:registerCallback("onTradingManagerSellToPlayer", "onDockedTradeSold")
+
         -- Attach the dev-only "OmniHub Tests" interaction script. Done here (not only via the station
         -- founder) so OmniHubs founded before it existed pick it up on reload. addScriptOnce avoids
         -- double-attach for newly founded stations that already got it from the founder list. The
         -- option only appears in dev mode (gated in omnihubtests.lua:interactionPossible).
         entity:addScriptOnce("data/scripts/entity/merchants/omnihubtests.lua")
+
+        -- Ensure the sector's ambient trader spawner is running (vanilla factories do the same in
+        -- their initialize). Discovery itself is handled by our lib overlay of tradingutility.lua,
+        -- which patches the tradeable-script allow-list in EVERY VM that includes it — a runtime
+        -- insert here would only patch this VM's copy and stay invisible to sector/traders.lua.
+        Sector():addScriptOnce("sector/traders.lua")
+
+        -- Offline simulation host: one director galaxy-wide (addScriptOnce dedupes), and a sync
+        -- with it on our first update tick (wake + reconcile + immediate heartbeat).
+        Galaxy():addScriptOnce("data/scripts/galaxy/omnihubdirector.lua")
+        needDirectorSync = true
 
         OmniHub.productionCapacity = Plan():getStats().productionCapacity
     end
@@ -218,6 +311,9 @@ end
 -- Signature is onDestroyed(index, lastDamageInflictor) per the engine (Entity Callbacks doc).
 function OmniHub.onDestroyed(index, lastDamageInflictor)
     if not onServer() then return end
+
+    -- Drop the offline-director registry entry — a destroyed hub must never be simulated again.
+    Galaxy():invokeFunction("data/scripts/galaxy/omnihubdirector.lua", "remove", Entity().id.string)
 
     -- Pure roll decides which installed units drop; engine calls (item construction + drop) stay here.
     local drops = OmniHubProduction.rollDrops(installed, OmniHubConfig.get("dropChance"), random())
@@ -246,8 +342,6 @@ function OmniHub.secure()
     data.sellEnabled        = sellEnabled
     data.buyEnabled         = buyEnabled
     data.stats              = stats
-    data.chosenDelivered    = chosenDelivered
-    data.chosenDelivering   = chosenDelivering
     data.maxLimit           = hubMaxLimit
     data.debug              = hubDebug
     data.tradingData        = OmniHub.secureTradingGoods()
@@ -262,8 +356,6 @@ function OmniHub.restore(data)
     sellEnabled            = data.sellEnabled        or {}
     buyEnabled             = data.buyEnabled         or {}
     stats                  = data.stats              or OmniHubStats.new()
-    chosenDelivered        = data.chosenDelivered    or {}
-    chosenDelivering       = data.chosenDelivering   or {}
     -- data.maxLimit is the current key; data.reserve (with legacy field names) is read for hubs saved
     -- before the rename so existing playtest stations keep their configured limits.
     local lim = data.maxLimit or {}
@@ -277,12 +369,12 @@ function OmniHub.restore(data)
     if data.tradingData then OmniHub.restoreTradingGoods(data.tradingData) end
     -- Server builds the authoritative max-limit cache and pushes it to clients (sendGoods override);
     -- the client never has the inputs (installed/marks/hubMaxLimit arrive via RPC, not restore), so it
-    -- relies on receiveMaxLimits instead of recomputing locally.
+    -- relies on receiveStockSync instead of recomputing locally.
     if onServer() then OmniHub.rebuild() end
 end
 
 -- ────────────────────────────────────────────────────────────────
--- Update loop (production + trader spawning + transfers + stats)
+-- Update loop (production + trader spawning + stats)
 -- ────────────────────────────────────────────────────────────────
 function OmniHub.getUpdateInterval()
     -- numPlayers is a server-only Sector property; reading it on the client
@@ -297,7 +389,7 @@ function OmniHub.update(timeStep)
     if not onServer() then return end
     OmniHub.runProductionCycles(timeStep)
     OmniHub.requestTraders(timeStep)
-    OmniHub.updateTransfers(timeStep)
+    OmniHub.directorTick(timeStep)
     OmniHub.advanceStats(timeStep)
     OmniHubRates.advance(rates, timeStep)
     OmniHub.debugTick(timeStep)
@@ -323,17 +415,20 @@ function OmniHub.tickRecipe(key, count, timeStep)
     if progress then
         local advance = timeStep / ttm
         if progress.boosted then advance = advance * 2 end
+        -- Smooth rate accrual: record exactly the progress made this tick (clamped at the cycle end
+        -- so fractions sum to 1.0 per cycle). Cargo still moves in lumps — ingredients at start,
+        -- results at completion — only the RATE measurement smooths, which removes the C>L window
+        -- aliasing the old lump-at-completion recording produced.
+        OmniHubRates.recordCycle(rates, prod, count, math.min(advance, 1.0 - progress.progress))
         progress.progress = progress.progress + advance
 
         if progress.progress >= 1.0 then
             for _, res in pairs(prod.results) do
                 OmniHub.increaseGoods(res.name, res.amount * count)
-                OmniHubRates.recordProduced(rates, res.name, res.amount * count)
             end
             if prod.garbages then
                 for _, gar in pairs(prod.garbages) do
                     OmniHub.increaseGoods(gar.name, gar.amount * count)
-                    OmniHubRates.recordProduced(rates, gar.name, gar.amount * count)
                 end
             end
             productionProgress[key] = nil
@@ -358,9 +453,10 @@ function OmniHub.tickRecipe(key, count, timeStep)
     productionStatus[key] = decision  -- remembered for the debug logger (reason it could/couldn't start)
     if not decision.canProduce then return end
 
+    -- Ingredients leave cargo up-front (vanilla behavior); their RATE is accrued smoothly over the
+    -- cycle by recordCycle above, not lumped here.
     for _, ing in pairs(prod.ingredients) do
         OmniHub.decreaseGoods(ing.name, ing.amount * count)
-        OmniHubRates.recordConsumed(rates, ing.name, ing.amount * count)
     end
 
     productionProgress[key] = {progress = 0, boosted = decision.boosted}
@@ -368,8 +464,9 @@ end
 
 -- Dev-mode production debug: throttled dump of each installed module's state — ACTIVE (mid-cycle, with
 -- progress%) or STALLED (idle, with the reason from its last canStartCycle). Gated on the owner toggle
--- AND GameSettings().devMode so it never spams a live server, and rate-limited to one dump per
--- DEBUG_LOG_INTERVAL seconds. Output goes to the server log via print (prefixed for easy grep).
+-- AND GameSettings().devMode (hubLog re-checks both, but the early returns here skip building the
+-- dump strings at all), and rate-limited to one dump per DEBUG_LOG_INTERVAL seconds. Every line goes
+-- through hubLog, so it shares the one "[OmniHub] <title> (#<index>)" format with all other debug output.
 function OmniHub.debugTick(timeStep)
     if not onServer() then return end
     if not hubDebug then return end
@@ -379,24 +476,22 @@ function OmniHub.debugTick(timeStep)
     if OmniHub.debugClock < DEBUG_LOG_INTERVAL then return end
     OmniHub.debugClock = 0
 
-    local entity = Entity()
-    print(string.format("[OmniHub debug] %s (#%s) production:",
-        tostring(entity.title ~= "" and entity.title or "OmniHub"), tostring(entity.index)))
+    hubLog("production:")
 
     if not next(installed) then
-        print("[OmniHub debug]   (no modules installed)")
+        hubLog("  (no modules installed)")
     end
     for key, count in pairs(installed) do
         local def      = OmniHubModuleDefs.get(key)
         local label    = def and def.name or key
         local progress = productionProgress[key]
         if progress then
-            print(string.format("[OmniHub debug]   ACTIVE  %s x%d  %d%%%s",
+            hubLog("  ACTIVE  %s x%d  %d%%%s",
                 tostring(label), count, math.floor((progress.progress or 0) * 100),
-                progress.boosted and " (boosted)" or ""))
+                progress.boosted and " (boosted)" or "")
         else
-            print(string.format("[OmniHub debug]   STALLED %s x%d  %s",
-                tostring(label), count, OmniHubProduction.describeStall(productionStatus[key])))
+            hubLog("  STALLED %s x%d  %s",
+                tostring(label), count, OmniHubProduction.describeStall(productionStatus[key]))
         end
     end
 
@@ -408,13 +503,12 @@ function OmniHub.debugTick(timeStep)
     for name, cap in pairs(maxLimitByGood) do
         if cap and cap > 0 then
             if not anyRes then
-                print("[OmniHub debug]   max limits (stock / cap):"); anyRes = true
+                hubLog("  max limits (stock / cap):"); anyRes = true
             end
-            print(string.format("[OmniHub debug]     %s  %d / %d",
-                tostring(name), OmniHub.getNumGoods(name), cap))
+            hubLog("    %s  %d / %d", tostring(name), OmniHub.getNumGoods(name), cap)
         end
     end
-    if not anyRes then print("[OmniHub debug]   max limits: none (no produced/consumed/buy-marked goods)") end
+    if not anyRes then hubLog("  max limits: none (no produced/consumed/buy-marked goods)") end
 end
 
 function OmniHub.computeTimeToProduce(key)
@@ -457,9 +551,15 @@ function OmniHub.rebuild()
     aggregatedProduction = agg.aggregatedProduction
     OmniHub.updateOwnSupply()
 
-    -- Reservation cache: produced/consumed goods (from agg) + buy-marked goods (lists.boughtNames).
-    -- Reuses the agg/lists already built here so the recompute is free on this path.
-    maxLimitByGood = OmniHubMaxLimit.compute(agg, lists.boughtNames, hubMaxLimit)
+    -- Reservation cache: produced/consumed goods (from agg) + EXPLICITLY traded goods (buy or
+    -- sell marks — sell-only passthrough goods need a cap too or they render 0/0 and fail the
+    -- getMaxGoods trade gate). Reuses the agg/lists already built here.
+    maxLimitByGood = OmniHubMaxLimit.compute(agg, lists.boughtNames, hubMaxLimit, lists.soldNames)
+
+    local nCaps = 0
+    for _, cap in pairs(maxLimitByGood) do if cap > 0 then nCaps = nCaps + 1 end end
+    hubLog("rebuild: %d sold / %d bought mark(s) -> %d positive cap(s)",
+        #lists.soldNames, #lists.boughtNames, nCaps)
 
     for key in pairs(installed) do
         timeToProduce[key] = OmniHub.computeTimeToProduce(key)
@@ -474,16 +574,23 @@ function OmniHub.recomputeMaxLimits()
     if not onServer() then return end
     local agg   = OmniHubProduction.aggregate(installed, OmniHubModuleDefs.resolveRecipe)
     local lists = OmniHubTrading.buildTradeLists(sellEnabled, buyEnabled)
-    maxLimitByGood = OmniHubMaxLimit.compute(agg, lists.boughtNames, hubMaxLimit)
+    maxLimitByGood = OmniHubMaxLimit.compute(agg, lists.boughtNames, hubMaxLimit, lists.soldNames)
 end
 
--- Push the authoritative per-good max-limit map to one client. The map is the ONLY thing the client
--- needs to render the stock column (amount/getMaxStock) correctly, and it's small, so a targeted push
--- updates only what changed — no full goods re-pull.
-function OmniHub.sendMaxLimitsTo(player)
-    if onServer() and player then
-        invokeClientFunction(player, "receiveMaxLimits", maxLimitByGood)
+-- Push the authoritative stock view to one client in a single RPC: per-good max-limit caps AND
+-- per-good amounts. The client renders the stock column as amount/cap from exactly these two maps
+-- (its replicated cargo drifts behind the server — see the trader.getNumGoods override above).
+function OmniHub.sendStockSyncTo(player)
+    if not (onServer() and player) then return end
+    local t = OmniHub.trader
+    local stocks = {}
+    for _, good in pairs(t.soldGoods or {}) do
+        stocks[good.name] = t:getNumGoods(good.name)
     end
+    for _, good in pairs(t.boughtGoods or {}) do
+        if stocks[good.name] == nil then stocks[good.name] = t:getNumGoods(good.name) end
+    end
+    invokeClientFunction(player, "receiveStockSync", maxLimitByGood, stocks)
 end
 
 -- The vanilla buy/sell GUI renders each row's stock as amount/getMaxStock(good) ON THE CLIENT, and our
@@ -492,7 +599,20 @@ end
 -- Wrapping sendGoods covers window open, tab refresh, and post-change pulls without a separate RPC.
 function OmniHub.sendGoods(...)
     if base_sendGoods then base_sendGoods(...) end
-    if callingPlayer then OmniHub.sendMaxLimitsTo(Player(callingPlayer)) end
+    if callingPlayer then OmniHub.sendStockSyncTo(Player(callingPlayer)) end
+
+    -- Stale-stock diagnostic (server side of the sync boundary): what the server believes at the
+    -- moment it answers a goods pull. Compare with the client's receiveGoods line — if these stocks
+    -- differ, the divergence is between server cargo and client cargo replication; if they match
+    -- but the UI shows something else, the divergence is in the repaint path.
+    local t = OmniHub.trader
+    local sample = t.soldGoods and t.soldGoods[1] or (t.boughtGoods and t.boughtGoods[1])
+    if sample then
+        hubLog("sendGoods -> player %s: %s sold / %s bought; sample %s server stock=%s cap=%s",
+            tostring(callingPlayer), tostring(t.numSold), tostring(t.numBought),
+            tostring(sample.name), tostring(OmniHub.getNumGoods(sample.name)),
+            tostring(maxLimitByGood[sample.name]))
+    end
 end
 callable(OmniHub, "sendGoods")
 
@@ -531,7 +651,90 @@ function OmniHub.regionalPct(name)
     return pct
 end
 
--- requestTraders: mirrors factory.lua:1828-1885.
+-- ────────────────────────────────────────────────────────────────
+-- Dev-mode test hooks (in-game suite host)
+-- ────────────────────────────────────────────────────────────────
+
+-- Runs the in-game test suites INSIDE THIS SCRIPT'S VM. Each Avorion namespace is its own Lua VM:
+-- a suite hosted in the OmniHubTests VM would see neither _G.OmniHub nor this script's included-lib
+-- instances. omnihubtests.lua therefore calls this via Entity():invokeFunction (server-side,
+-- cross-VM, returns plain tables) and only renders the result.
+function OmniHub.runDevTests(category)
+    if not onServer() then return end
+    if not GameSettings().devMode then return end
+    local registry = include("lib/omnihub/tests/registry")
+    local runner   = registry.run(category or "all")
+    print(runner:format())
+    return runner:summary()
+end
+
+-- Dev-only seam: the exact TradingUtility table this script uses (allow-list assertions). A suite
+-- inspecting its own include("tradingutility") copy would see a different instance.
+function OmniHub.getTradingUtilityForTests()
+    if not GameSettings().devMode then return end
+    return TradingUtility
+end
+
+-- Dev-only seam: the exact instances requestTraders drives, so the in-game suite can patch
+-- spawnWave/countTraders (fleet) and waveSize (decision) on the tables the controller calls.
+function OmniHub.getWaveSeamsForTests()
+    if not GameSettings().devMode then return end
+    return { fleet = OmniHubTraderFleet, decision = OmniHubTradingDecision }
+end
+
+-- Forced wave restart: consecutive blocked request windows before starting a wave despite
+-- lingering traders. Our own zombies self-despawn via the ship TTL; this backstop exists mainly
+-- for ambient vanilla ships we can't give a TTL. 4 windows at the 90s cooldown ≈ 6 minutes.
+local FORCE_WAVE_AFTER_BLOCKED = 4
+
+-- Engine-read query the pure trade decisions read hub state through.
+local function tradeQuery()
+    return {
+        getNumGoods = function(name) return OmniHub.getNumGoods(name) end,
+        getMaxGoods = function(name) return OmniHub.getMaxGoods(name) end,
+        goodPrice   = function(name) local g = goods[name]; return g and g.price end,
+        getGoodSize = function(name) local g = goods[name]; return g and g.size or 1 end,
+    }
+end
+
+-- rng adapter for the pure wave planner: engine Random for the buyer value gate, math.random for
+-- the uniform rolls (vanilla spawnTrader uses math.random for the same purposes).
+local function waveRng()
+    local r = random()
+    return {
+        test     = function(_, p) return r:test(p) end,
+        random01 = function() return math.random() end,
+    }
+end
+
+-- Immediate-mode wave (sector loaded, no players): vanilla shape — instant buyGoods/sellGoods
+-- against the nearest faction, no ships. The wrappers below record statistics as usual.
+local function applyWaveImmediate(manifests, tradingFactionIndex)
+    for _, manifest in ipairs(manifests) do
+        for _, op in ipairs(OmniHubTradingDecision.transactionList(manifest)) do
+            local g    = goods[op.name]
+            local good = g and g:good()
+            if good then
+                local err
+                if op.kind == "deliver" then
+                    err = OmniHub.buyGoods(good, op.amount, tradingFactionIndex)
+                else
+                    err = OmniHub.sellGoods(good, op.amount, tradingFactionIndex)
+                end
+                if err ~= 0 then
+                    hubLog("immediate wave: %s %s x%d failed (code %s)",
+                        op.kind, op.name, op.amount, tostring(err))
+                end
+            end
+        end
+    end
+end
+
+-- requestTraders, wave model (multi-trader design doc): on the vanilla 90s cooldown cadence, plan
+-- ALL eligible trades into mixed-trader manifests and spawn them as one wave. A new wave starts
+-- only when no trader (ours or ambient) is still serving the hub — strict zero-count gate with
+-- the forced-restart backstop. Composition is deterministic (no pSeller roll); ship count is
+-- capped by the maxTradersPerWave config and the hub's free docking positions.
 function OmniHub.requestTraders(timeStep)
     if not onServer() then return end
     if not aggregatedProduction then return end
@@ -545,28 +748,191 @@ function OmniHub.requestTraders(timeStep)
 
     local entity = Entity()
 
-    if TradingUtility.hasTraders(entity) then return end
+    local liveCount = OmniHubTraderFleet.countTraders(entity)
+    local gate = OmniHubTradingDecision.waveGate(liveCount, hasTradersBlocks, FORCE_WAVE_AFTER_BLOCKED)
+    hasTradersBlocks = gate.blocked
+    if not gate.start then
+        hubLog("requestTraders: wave blocked by %d live trader(s) (%d consecutive windows)",
+            liveCount, gate.blocked)
+        return
+    end
+    if gate.forced then
+        hubWarn("requestTraders: FORCED wave start (%d trader(s) still lingering after %d blocked windows)",
+            liveCount, FORCE_WAVE_AFTER_BLOCKED)
+    end
 
-    local immediate  = (sector.numPlayers == 0)
-    local pSeller    = OmniHub.getSellerProbability()
-    local wantSeller = random():test(pSeller)
+    local immediate = (sector.numPlayers == 0)
 
-    if not wantSeller and OmniHub.trader.activelySell then
-        for _, result in pairs(aggregatedProduction.results) do
-            if OmniHub.trySpawnBuyer(entity, result, immediate) then return end
+    -- Owner trade-direction gates (vanilla activelyRequest/activelySell) filter the wave's sides.
+    local agg = {
+        ingredients = OmniHub.trader.activelyRequest and aggregatedProduction.ingredients or {},
+        results     = OmniHub.trader.activelySell    and aggregatedProduction.results     or {},
+        garbages    = OmniHub.trader.activelySell    and aggregatedProduction.garbages    or {},
+    }
+
+    local docks     = DockingPositions(entity)
+    local dockCount = (docks and docks.numDockingPositions) or 0
+    local ships     = OmniHubTradingDecision.waveSize(
+        OmniHubConfig.get("maxTradersPerWave"), dockCount, liveCount)
+    -- Immediate mode trades without ships, so dock capacity doesn't constrain the budget.
+    if immediate then ships = OmniHubConfig.get("maxTradersPerWave") end
+    if ships <= 0 then
+        hubLog("requestTraders: no wave capacity (docks=%d, live=%d)", dockCount, liveCount)
+        return
+    end
+
+    local shipValue = OmniHubTraderFleet.shipValueCap()
+    local manifests = OmniHubTradingDecision.planWave(agg, tradeQuery(), waveRng(), {
+        maxShips  = ships,
+        shipValue = shipValue,
+        -- shipVolume: unknown before the freighter is generated (vanilla never checks either);
+        -- planWave supports it for when a volume source exists.
+        immediate = immediate,
+        -- Owner affordability: never request deliveries the station faction can't pay for —
+        -- buyFromShip would fail its canPay check silently (the error goes to the NPC's faction)
+        -- and the trader would dock and leave empty.
+        budget    = Faction().money,
+        buyFactor = OmniHub.trader.buyPriceFactor,
+    })
+    -- Which limiter shaped this wave: manifests < ships means everything fit fewer hulls (value
+    -- below the per-ship cap); ships < config means dock capacity clamped the budget; zero
+    -- deliveries despite unmet ingredients usually means the money budget ate them.
+    local nDel, nPick = 0, 0
+    for _, manifest in ipairs(manifests) do
+        nDel  = nDel + #manifest.deliveries
+        nPick = nPick + #manifest.pickups
+    end
+    hubLog("requestTraders: wave planned — %d manifest(s): %d delivery item(s), %d pickup item(s) "
+        .. "(budget %d ships, docks %d, live %d, shipValueCap %s, money %s)",
+        #manifests, nDel, nPick, ships, dockCount, liveCount,
+        tostring(math.floor(shipValue)), tostring(Faction().money))
+    if #manifests == 0 then
+        hubLog("requestTraders: nothing eligible this wave")
+        return
+    end
+
+    if immediate then
+        local faction = Galaxy():getNearestFaction(sector:getCoordinates())
+        applyWaveImmediate(manifests, faction.index)
+        hubLog("requestTraders: immediate wave applied (%d manifest(s))", #manifests)
+    else
+        local n = OmniHubTraderFleet.spawnWave(entity, manifests, getScriptPath(), OmniHub)
+        hubLog("requestTraders: wave spawned (%d trader(s))", n)
+    end
+end
+
+-- ────────────────────────────────────────────────────────────────
+-- Offline director sync (heartbeat publish + wake reconcile)
+-- ────────────────────────────────────────────────────────────────
+local DIRECTOR_SCRIPT    = "data/scripts/galaxy/omnihubdirector.lua"
+local HEARTBEAT_INTERVAL = 30  -- seconds between publishes while loaded (NOT per tick)
+
+-- Compact shadow snapshot: everything the pure offline sim needs and cannot read itself. Captured
+-- at heartbeat because the inputs (ttm from production capacity, caps from marks/limits, the
+-- sector's value cap) are unavailable while the sector is unloaded.
+local function buildShadowSnapshot()
+    local entity = Entity()
+    local q = tradeQuery()
+    local inventory, tradeCaps = {}, {}
+    if aggregatedProduction then
+        local function snap(list)
+            for _, g in pairs(list or {}) do
+                inventory[g.name] = q.getNumGoods(g.name)
+                tradeCaps[g.name] = q.getMaxGoods(g.name)
+            end
+        end
+        snap(aggregatedProduction.ingredients)
+        snap(aggregatedProduction.results)
+        snap(aggregatedProduction.garbages)
+    end
+
+    local sector = Sector()
+    local docks  = DockingPositions(entity)
+    return {
+        installed = installed,
+        ttm       = timeToProduce,
+        progress  = productionProgress,
+        inventory = inventory,
+        tradeCaps = tradeCaps,
+        stockCaps = maxLimitByGood,
+        freeSpace = entity.freeCargoSpace,
+        buyFactor  = OmniHub.trader.buyPriceFactor,
+        sellFactor = OmniHub.trader.sellPriceFactor,
+        activelyRequest = OmniHub.trader.activelyRequest and true or false,
+        activelySell    = OmniHub.trader.activelySell and true or false,
+        flags = {
+            war     = sector:getValue("war_zone") and true or false,
+            noTrade = sector:getValue("no_trade_zone") and true or false,
+        },
+        cfg = {
+            -- The offline wave period = online cooldown x multiplier: the slower cadence models
+            -- the docking latency (fly-in + queue + 40s wait + fly-out) online waves pay.
+            wavePeriod = OmniHubConfig.get("traderRequestCooldown")
+                       * OmniHubConfig.get("offlineWaveDelayMultiplier"),
+            maxShips   = math.min(OmniHubConfig.get("maxTradersPerWave"),
+                                  (docks and docks.numDockingPositions) or 0),
+            shipValue  = OmniHubTraderFleet.shipValueCap(),
+        },
+        waveTimer = 0,
+    }
+end
+
+local function sendHeartbeat()
+    local x, y = Sector():getCoordinates()
+    Galaxy():invokeFunction(DIRECTOR_SCRIPT, "heartbeat", {
+        id     = Entity().id.string,
+        x      = x,
+        y      = y,
+        owner  = Faction().index,
+        shadow = buildShadowSnapshot(),
+    })
+end
+
+-- Wake reconcile: pull the director's shadow and write its inventory into REAL cargo (absolute
+-- amounts; the shadow is the sole authority for the offline period). Money is NOT touched here —
+-- it was settled live during offline simulation; re-applying would double-pay (the offline spec's
+-- loudest invariant).
+local function reconcileWithDirector()
+    local err, shadow = Galaxy():invokeFunction(DIRECTOR_SCRIPT, "wake", Entity().id.string)
+    if err ~= 0 or not shadow then return end  -- not registered yet: nothing happened offline
+
+    local entity = Entity()
+    for name, amount in pairs(shadow.inventory or {}) do
+        local g    = goods[name]
+        local good = g and g:good()
+        if good then
+            local current = entity:getCargoAmount(good)
+            local delta   = amount - current
+            if delta > 0 then
+                entity:addCargo(good, delta)
+            elseif delta < 0 then
+                entity:removeCargo(good, -delta)
+            end
         end
     end
 
-    if wantSeller and OmniHub.trader.activelyRequest then
-        for _, ing in pairs(aggregatedProduction.ingredients) do
-            if OmniHub.trySpawnSeller(entity, ing, immediate) then return end
-        end
+    -- Continue mid-cycle production where the offline sim left it (keys may have changed if the
+    -- owner never could offline — guard on still-installed).
+    for key, p in pairs(shadow.progress or {}) do
+        if installed[key] then productionProgress[key] = p end
     end
 
-    if not wantSeller and OmniHub.trader.activelySell then
-        for _, gar in pairs(aggregatedProduction.garbages) do
-            if OmniHub.trySpawnBuyer(entity, gar, immediate) then return end
-        end
+    hubLog("director: reconciled offline result into cargo")
+end
+
+function OmniHub.directorTick(timeStep)
+    if needDirectorSync then
+        needDirectorSync = false
+        reconcileWithDirector()
+        sendHeartbeat()
+        directorHeartbeatClock = 0
+        return
+    end
+
+    directorHeartbeatClock = directorHeartbeatClock + timeStep
+    if directorHeartbeatClock >= HEARTBEAT_INTERVAL then
+        directorHeartbeatClock = 0
+        sendHeartbeat()
     end
 end
 
@@ -575,42 +941,92 @@ function OmniHub.getSellerProbability()
     return OmniHubProduction.sellerProbability(OmniHub.trader.buyPriceFactor)
 end
 
--- Mirrors factory.lua:1898
-function OmniHub.trySpawnSeller(entity, good, immediate)
-    local have    = OmniHub.getNumGoods(good.name)
-    local maximum = OmniHub.getMaxGoods(good.name)
-    if have < good.amount then
-        local amount = math.min(maximum, 500) - have
-        if immediate then amount = round(amount * 0.3) end
-        TradingUtility.spawnSeller(entity.id, getScriptPath(), good.name, amount, OmniHub, immediate)
-        return true
-    end
-end
-
--- Mirrors factory.lua:1913
-function OmniHub.trySpawnBuyer(entity, good, immediate)
-    if not goods[good.name] then return end
-    local newAmount = OmniHub.getNumGoods(good.name) + good.amount
-    local maxGoods  = OmniHub.getMaxGoods(good.name)
-    local value     = newAmount * goods[good.name].price
-    if newAmount > maxGoods * 0.8 or (value > 100000 and random():test(0.3)) then
-        TradingUtility.spawnBuyer(entity.id, getScriptPath(), good.name, OmniHub, immediate)
-        return true
-    end
-end
 
 -- ────────────────────────────────────────────────────────────────
 -- Statistics (transaction logging + last-hour ring)
 -- ────────────────────────────────────────────────────────────────
 
+-- Docked-trade failure visibility: vanilla buyFromShip/sellToShip report failures only to the
+-- VISITING ship's faction (an NPC — the owner never sees the message) and return nothing, so a
+-- trader that docks and leaves without trading is otherwise invisible. Wrap both to log (debug-
+-- gated) whenever a docked exchange moved no stock, with the likely reason.
+function OmniHub.buyFromShip(shipIndex, goodName, amount, noDockCheck)
+    local before = onServer() and OmniHub.getNumGoods(goodName) or 0
+    local r = base_buyFromShip(shipIndex, goodName, amount, noDockCheck)
+    if onServer() and OmniHub.getNumGoods(goodName) == before then
+        -- Partial-purchase retry: vanilla canPay is all-or-nothing, and AMBIENT traders (invited
+        -- via the A1 allow-list) size their loads without knowing our balance — a too-big delivery
+        -- would otherwise dock and leave with everything. Buy HALF of what the money covers,
+        -- keeping the window open for the wave's other deliveries.
+        local faction = Faction()
+        local ship    = Entity(shipIndex)
+        local unit    = ship and OmniHub.getBuyPrice(goodName, ship.factionIndex) or 0
+        local payFactor = OmniHub.trader.factionPaymentFactor or 1.0
+        local fullCost  = unit * (tonumber(amount) or 0) * payFactor
+        local partial   = OmniHubTradingDecision.partialBuyAmount(faction.money, unit * payFactor)
+
+        if unit > 0 and fullCost > 0 and not faction:canPayMoney(fullCost)
+                and partial > 0 and partial < (tonumber(amount) or 0) then
+            hubLog("docked delivery of %s x%s unaffordable (balance %s) — retrying with x%d (half of affordable)",
+                tostring(goodName), tostring(amount), tostring(faction.money), partial)
+            base_buyFromShip(shipIndex, goodName, partial, noDockCheck)
+            if OmniHub.getNumGoods(goodName) > before then return r end
+        end
+
+        hubLog("docked delivery of %s x%s moved NO stock (likely: faction can't pay — balance %s — or stock cap reached)",
+            tostring(goodName), tostring(amount), tostring(Faction().money))
+    end
+    return r
+end
+
+function OmniHub.sellToShip(shipIndex, goodName, amount, noDockCheck)
+    local before = onServer() and OmniHub.getNumGoods(goodName) or 0
+    local r = base_sellToShip(shipIndex, goodName, amount, noDockCheck)
+    if onServer() and OmniHub.getNumGoods(goodName) == before then
+        hubLog("docked pickup of %s x%s moved NO stock (likely: nothing in stock, buyer can't pay, or ship hold full)",
+            tostring(goodName), tostring(amount))
+    end
+    return r
+end
+
+-- Partner label for a docked trade: the calling player's name at the trade UI, or a generic tag for
+-- an NPC tradeship (the callbacks don't carry the counterparty faction).
+local function dockedTradePartner()
+    if callingPlayer then
+        local p = Player(callingPlayer)
+        if p then return p.name end
+    end
+    return "NPC trader"%_t
+end
+
+-- Docked-trade callbacks, fired by tradingmanager's buyFromShip/sellToShip (see initialize). `price`
+-- is the TOTAL transaction value — the same convention the buyGoods/sellGoods wrappers below record,
+-- and the two paths are disjoint (buyGoods/sellGoods fire no callbacks), so nothing double-counts.
+function OmniHub.onDockedTradeBought(goodName, amount, price)
+    if not onServer() then return end
+    hubLog("docked trade: bought %s x%s for %s", tostring(goodName), tostring(amount), tostring(price))
+    OmniHubStats.record(stats, {kind = "buy", good = goodName, amount = amount, price = price,
+                                partner = dockedTradePartner()})
+end
+
+function OmniHub.onDockedTradeSold(goodName, amount, price)
+    if not onServer() then return end
+    hubLog("docked trade: sold %s x%s for %s", tostring(goodName), tostring(amount), tostring(price))
+    OmniHubStats.record(stats, {kind = "sell", good = goodName, amount = amount, price = price,
+                                partner = dockedTradePartner()})
+end
+
 -- Wrap the inherited buy/sell so every successful trader transaction is recorded. buyGoods/sellGoods
 -- return (0, price) on success (tradingmanager.lua); a bare error code otherwise.
+-- NOTE: partner uses the RAW faction name — Faction.translatedName is CLIENT-ONLY; reading it on
+-- the server throws "Property not found or not readable" with a full traceback in the log (and
+-- aborted the stats recording). NPC faction names are generated words, so the raw name reads fine.
 function OmniHub.buyGoods(good, amount, otherFactionIndex, monetaryOnly)
     local code, price = base_buyGoods(good, amount, otherFactionIndex, monetaryOnly)
     if onServer() and code == 0 then
         local f = Faction(otherFactionIndex)
         OmniHubStats.record(stats, {kind = "buy", good = good.name, amount = amount, price = price,
-                                    partner = f and f.translatedName or ""})
+                                    partner = f and f.name or ""})
     end
     return code, price
 end
@@ -620,7 +1036,7 @@ function OmniHub.sellGoods(good, amount, otherFactionIndex, monetaryOnly)
     if onServer() and code == 0 then
         local f = Faction(otherFactionIndex)
         OmniHubStats.record(stats, {kind = "sell", good = good.name, amount = amount, price = price,
-                                    partner = f and f.translatedName or ""})
+                                    partner = f and f.name or ""})
     end
     return code, price
 end
@@ -662,41 +1078,6 @@ function OmniHub.collectStorage()
 end
 
 -- ────────────────────────────────────────────────────────────────
--- Inter-station transfers
--- ────────────────────────────────────────────────────────────────
-
-function OmniHub.updateTransfers(timeStep)
-    if not aggregatedProduction then return end
-    if not (next(chosenDelivered) or next(chosenDelivering)) then return end
-
-    OmniHub.tradeClock = (OmniHub.tradeClock or 0) + timeStep
-    local dockedOnly = true
-    if OmniHub.tradeClock >= SECTOR_TRADE_INTERVAL then
-        OmniHub.tradeClock = OmniHub.tradeClock - SECTOR_TRADE_INTERVAL
-        dockedOnly = false
-    end
-
-    local volume = OmniHubConfig.get("transportVolume")
-    local hub = {
-        getSoldGoodByName = OmniHub.getSoldGoodByName,
-        getStock          = OmniHub.getStock,
-        decreaseGoods     = OmniHub.decreaseGoods,
-        recordTxn         = function(t) OmniHubStats.record(stats, t) end,
-    }
-    deliveredErrors  = OmniHubTransfers.deliver(hub, chosenDelivered, volume, dockedOnly)
-    deliveringErrors = OmniHubTransfers.fetch(hub, chosenDelivering, volume, dockedOnly)
-end
-
--- Resolves a list of selected partner ids back to their trade lists from the last sector scan.
-function OmniHub.resolveChosen(ids, candidates)
-    local chosen = {}
-    for _, id in ipairs(ids or {}) do
-        if id and candidates[id] then chosen[id] = candidates[id] end
-    end
-    return chosen
-end
-
--- ────────────────────────────────────────────────────────────────
 -- Per-good sell/buy marks (owner-gated)
 -- ────────────────────────────────────────────────────────────────
 
@@ -708,6 +1089,9 @@ function OmniHub.setGoodSell(name, enabled)
     if not callerIsOwner() then return end
     OmniHubTrading.setMark(sellEnabled, name, enabled)  -- explicit true/false
     OmniHub.rebuild()
+    -- Push the refreshed caps/amounts immediately: a freshly marked good is already visible in
+    -- the Buy/Sell rows, and without this its cap renders 0/0 until the next full goods pull.
+    OmniHub.sendStockSyncTo(Player(callingPlayer))
 end
 callable(OmniHub, "setGoodSell")
 
@@ -716,6 +1100,7 @@ function OmniHub.setGoodBuy(name, enabled)
     if not callerIsOwner() then return end
     OmniHubTrading.setMark(buyEnabled, name, enabled)
     OmniHub.rebuild()
+    OmniHub.sendStockSyncTo(Player(callingPlayer))
 end
 callable(OmniHub, "setGoodBuy")
 
@@ -734,8 +1119,8 @@ function OmniHub.setPriceFactors(buyFactor, sellFactor)
     if not valid(buyFactor) or not valid(sellFactor) then
         local player = Player(callingPlayer)
         local who = (player and player.name or "?") .. " (#" .. tostring(callingPlayer) .. ")"
-        print("[OmniHub] SECURITY: " .. who .. " sent out-of-range price factors (buy="
-            .. tostring(buyFactor) .. ", sell=" .. tostring(sellFactor) .. ") — rejected.")
+        hubWarn("SECURITY: %s sent out-of-range price factors (buy=%s, sell=%s) — rejected.",
+            who, tostring(buyFactor), tostring(sellFactor))
         if player then
             player:sendChatMessage("OmniHub"%_t, ChatMessageType.Error, "Invalid price value rejected."%_t)
         end
@@ -759,33 +1144,17 @@ end
 callable(OmniHub, "sendHubConfig")
 
 function OmniHub.sendHubConfigTo(player)
-    -- Refresh the candidate partner scan so the combos list reachable stations and a later selection
-    -- resolves to real trades.
-    local del, fetch, delOpts, fetchOpts = OmniHubTransfers.collectPartners(aggregatedProduction)
-    candidateDelivered  = del
-    candidateDelivering = fetch
-
-    local function keysOf(map)
-        local out = {}
-        for id in pairs(map) do out[#out + 1] = id end
-        return out
-    end
-
     local cfg = {
-        activelyRequest   = OmniHub.trader.activelyRequest,
-        activelySell      = OmniHub.trader.activelySell,
-        priceFactorBuy    = OmniHub.trader.buyPriceFactor,
-        priceFactorSell   = OmniHub.trader.sellPriceFactor,
-        deliveredIds      = keysOf(chosenDelivered),
-        deliveringIds     = keysOf(chosenDelivering),
-        deliveredOptions  = delOpts,
-        deliveringOptions = fetchOpts,
-        limitBuy      = hubMaxLimit.buyLimit,
-        limitBase     = hubMaxLimit.prodBase,
-        limitCycles   = hubMaxLimit.prodCycles,
-        debug             = hubDebug,
+        activelyRequest = OmniHub.trader.activelyRequest,
+        activelySell    = OmniHub.trader.activelySell,
+        priceFactorBuy  = OmniHub.trader.buyPriceFactor,
+        priceFactorSell = OmniHub.trader.sellPriceFactor,
+        limitBuy        = hubMaxLimit.buyLimit,
+        limitBase       = hubMaxLimit.prodBase,
+        limitCycles     = hubMaxLimit.prodCycles,
+        debug           = hubDebug,
     }
-    invokeClientFunction(player, "receiveHubConfig", cfg, deliveredErrors, deliveringErrors)
+    invokeClientFunction(player, "receiveHubConfig", cfg)
 end
 
 function OmniHub.applyHubConfig(cfg)
@@ -794,14 +1163,11 @@ function OmniHub.applyHubConfig(cfg)
     if not cfg then return end
 
     -- Price factors are owned by the sliders (setPriceFactors); applyHubConfig only handles the
-    -- active-trade flags and the inter-station transfers.
+    -- active-trade flags.
     OmniHub.trader.buyFromOthers   = true
     OmniHub.trader.sellToOthers    = true
     OmniHub.trader.activelyRequest = cfg.activelyRequest and true or false
     OmniHub.trader.activelySell    = cfg.activelySell and true or false
-
-    chosenDelivered  = OmniHub.resolveChosen(cfg.deliveredIds, candidateDelivered)
-    chosenDelivering = OmniHub.resolveChosen(cfg.deliveringIds, candidateDelivering)
 
     -- Max-limit tuning (nil-safe: a client that doesn't send these keeps the current values). floor()
     -- keeps limits whole; clamps guard against a tampered client. buyLimit may be 0 ("don't stockpile
@@ -814,9 +1180,9 @@ function OmniHub.applyHubConfig(cfg)
     hubMaxLimit.prodCycles = math.floor(clamp(cfg.limitCycles or hubMaxLimit.prodCycles, 1, 10000))
     if limitsChanged then
         OmniHub.recomputeMaxLimits()
-        -- Push only the changed limit map so the open buy/sell stock column updates in place — no full
+        -- Push only the stock-view maps so the open buy/sell stock column updates in place — no full
         -- goods re-pull. (Without this, caps only refreshed on a full window reopen.)
-        OmniHub.sendMaxLimitsTo(Player(callingPlayer))
+        OmniHub.sendStockSyncTo(Player(callingPlayer))
     end
 
     -- Debug toggle (dev-only checkbox). Only update when the client actually sent it, so config pushes
@@ -953,6 +1319,15 @@ function OmniHub.sendHubGoods()
 end
 callable(OmniHub, "sendHubGoods")
 
+-- Live per-module boost states for boost-aware max rates: a boosted cycle advances at 2x
+-- (tickRecipe), so the achievable ceiling doubles while the boost lasts — without this, a boosted
+-- module's measured rate reads as 200% of "max" in the Goods tab.
+local function currentBoostMap()
+    local boosted = {}
+    for key, p in pairs(productionProgress) do boosted[key] = p.boosted or false end
+    return boosted
+end
+
 -- Builds one Goods-table row for `name` (nil if the good has no positive price). `maxR` is a
 -- precomputed maxRates result. Checkbox state = the EXPLICIT mark (unticked by default; installing a
 -- module never auto-enables trading). Prices come straight from goods[] (correct regardless of mark).
@@ -976,7 +1351,7 @@ function OmniHub.buildGoodRow(name, maxR, sellF, buyF)
 end
 
 function OmniHub.sendHubGoodsTo(player)
-    local maxR  = OmniHubProduction.maxRates(installed, OmniHubModuleDefs.resolveRecipe, timeToProduce, MIN_TIME_TO_PRODUCE)
+    local maxR  = OmniHubProduction.maxRates(installed, OmniHubModuleDefs.resolveRecipe, timeToProduce, MIN_TIME_TO_PRODUCE, currentBoostMap())
     local sellF = OmniHub.trader.sellPriceFactor
     local buyF  = OmniHub.trader.buyPriceFactor
 
@@ -999,7 +1374,7 @@ end
 function OmniHub.changedGoodRows(key)
     local prod = OmniHubModuleDefs.resolveRecipe(key)
     if not prod then return {} end
-    local maxR  = OmniHubProduction.maxRates(installed, OmniHubModuleDefs.resolveRecipe, timeToProduce, MIN_TIME_TO_PRODUCE)
+    local maxR  = OmniHubProduction.maxRates(installed, OmniHubModuleDefs.resolveRecipe, timeToProduce, MIN_TIME_TO_PRODUCE, currentBoostMap())
     local sellF = OmniHub.trader.sellPriceFactor
     local buyF  = OmniHub.trader.buyPriceFactor
 
@@ -1115,9 +1490,9 @@ function OmniHub.initUI()
         nameHeader   = "Name"%_t,
         nameTip      = "A good your installed modules produce and/or consume."%_t,
         prateHeader  = "PRate"%_t,
-        prateTip     = "Production rate, units per minute: actual (measured over the last ~60s) / max (theoretical at full utilisation). \"-\" = not produced here.\n\nGreen = at capacity, amber = below, orange = idle/starved."%_t,
+        prateTip     = "Production rate, units per minute: actual (measured over the last ~60s) / max (theoretical at full utilisation; doubles while a module runs boosted on a stocked optional ingredient). \"-\" = not produced here.\n\nGreen = at capacity, amber = below, orange = idle/starved."%_t,
         crateHeader  = "CRate"%_t,
-        crateTip     = "Consumption rate, units per minute: actual (last ~60s) / max (full utilisation). \"-\" = not consumed here.\n\nGreen = at capacity, amber = below, orange = idle/starved."%_t,
+        crateTip     = "Consumption rate, units per minute: actual (last ~60s) / max (full utilisation; doubles while a module runs boosted). \"-\" = not consumed here.\n\nGreen = at capacity, amber = below, orange = idle/starved."%_t,
         spHeader     = "SP"%_t,
         spTip        = "Sell price per unit = base price x your sell modifier x regional market. The price this hub sells one unit for."%_t,
         bpHeader     = "BP"%_t,
@@ -1207,6 +1582,22 @@ function OmniHub.repaintTradeLines()
             else t.boughtLines[i]:hide() end
         end
     end
+
+    -- 0/0 diagnostic: dump exactly what the row captions were computed FROM (same trader instance,
+    -- same overridden getters). If this shows N/100 while the visible row says 0/0, the painted
+    -- line objects aren't these; if it shows 0/0, the client-side caps cache is the problem.
+    local dump = {}
+    for i = 1, math.min(6, #(t.soldGoods or {})) do
+        local g = t.soldGoods[i]
+        dump[#dump + 1] = string.format("%s=%s/%s", g.name,
+            tostring(t:getNumGoods(g.name)), tostring(t:getMaxStock(g)))
+    end
+    for i = 1, math.min(6, #(t.boughtGoods or {})) do
+        local g = t.boughtGoods[i]
+        dump[#dump + 1] = string.format("%s=%s/%s", g.name,
+            tostring(t:getNumGoods(g.name)), tostring(t:getMaxStock(g)))
+    end
+    if #dump > 0 then hubLog("repaint rows: %s", table.concat(dump, " | ")) end
 end
 
 -- Re-slices trader.soldGoods/boughtGoods to the current page (clamped), repaints the rows, and
@@ -1250,6 +1641,11 @@ function OmniHub.receiveGoods(...)
     allBought = t.boughtGoods or {}
     OmniHub.applyPageSlices()
     OmniHub.updateTradeTabs()
+
+    -- Goods-pull diagnostic (client side, lands in the CLIENT log). Stock values are NOT logged
+    -- here: the authoritative amounts arrive in the FOLLOWING receiveStockSync message (same pull,
+    -- ordered after this one), which logs its own sample.
+    hubLog("receiveGoods: %s sold / %s bought", tostring(#allSold), tostring(#allBought))
 end
 
 function OmniHub.onBuyPrevPage()  buyPage  = buyPage  - 1; OmniHub.applyPageSlices() end
@@ -1322,9 +1718,27 @@ end
 
 -- Authoritative per-good max-limit caps pushed by the server alongside every goods sync (sendGoods
 -- override). Store them and repaint so the buy/sell stock column shows amount/cap instead of N/0.
-function OmniHub.receiveMaxLimits(map)
-    maxLimitByGood = map or {}
+-- Full stock-view sync (caps + amounts) arriving with every goods pull / limit change / mark
+-- change. From here on the trade UI renders from server truth; the (drifting) client cargo is
+-- only a pre-sync fallback.
+function OmniHub.receiveStockSync(limits, stocks)
+    maxLimitByGood = limits or {}
+    serverStock    = stocks or {}
+    local nCaps, nStocks = 0, 0
+    for _, cap in pairs(maxLimitByGood) do if cap and cap > 0 then nCaps = nCaps + 1 end end
+    for _ in pairs(serverStock) do nStocks = nStocks + 1 end
+    hubLog("receiveStockSync: %d positive cap(s), %d stock row(s)", nCaps, nStocks)
     OmniHub.repaintTradeLines()
+end
+
+-- Targeted per-good stock delta, broadcast by the server whenever a trade-listed good's amount
+-- actually changes. Updates the cache and repaints just that row via the vanilla per-good path
+-- (which reads trader:getNumGoods — i.e. the cache).
+function OmniHub.receiveStockDelta(name, amount)
+    if onServer() then return end
+    serverStock[name] = amount
+    OmniHub.updateSoldGoodAmount(name)
+    OmniHub.updateBoughtGoodAmount(name)
 end
 
 function OmniHub.receiveStats(lifetime, lastHour, txns, storage)
@@ -1334,38 +1748,13 @@ function OmniHub.receiveStats(lifetime, lastHour, txns, storage)
     end
 end
 
--- Safe property read (client): pcall guards a property that may not exist/throw; empty/nil -> nil.
-local function safeRead(obj, field)
-    if obj == nil then return nil end
-    local ok, v = pcall(function() return obj[field] end)
-    if ok and v ~= nil and v ~= "" then return v end
-    return nil
-end
-
--- Resolves server-sent partner ENTITY IDs into display options for the config combos. The label is
--- built entirely client-side from the live station entity, so translatedTitle/translatedName are
--- localized (they aren't readable on the server) and no display text crossed the network. Skips ids
--- whose station isn't present client-side; sorted by final label for stable combo order.
-local function resolvePartnerOptions(ids)
-    local out = {}
-    for _, id in ipairs(ids or {}) do
-        local station = Sector():getEntity(id)
-        if station then
-            local faction = Faction(station.factionIndex)
-            local fname   = safeRead(faction, "translatedName") or safeRead(faction, "name")
-            local title   = safeRead(station, "translatedTitle") or safeRead(station, "title")
-            out[#out + 1] = { id = id, name = OmniHubTrading.partnerLabel(title, station.name, fname) }
-        end
-    end
-    table.sort(out, function(a, b) return a.name < b.name end)
-    return out
-end
-
-function OmniHub.receiveHubConfig(cfg, dErrors, fErrors)
+function OmniHub.receiveHubConfig(cfg)
+    -- Mirror the owner's debug toggle into THIS (client) VM, so client-side hubLog lines (e.g. the
+    -- receiveGoods diagnostics) obey the same gate as the server's. Without this the client copy of
+    -- hubDebug stays false forever and client debug output is impossible.
+    if cfg and cfg.debug ~= nil then hubDebug = cfg.debug and true or false end
     if not configUI then return end
-    configUI:setOptions(resolvePartnerOptions(cfg.deliveredOptions), resolvePartnerOptions(cfg.deliveringOptions))
     configUI:apply(cfg)
-    configUI:setErrors(dErrors, fErrors)
 end
 
 -- ── Client event handlers (engine resolves these by name) ────────
@@ -1388,7 +1777,7 @@ function OmniHub.onGoodsBuyChanged(checkbox)
         goodsUI:setEnabled(name, "buy", checkbox.checked)
         invokeServerFunction("setGoodBuy", name, checkbox.checked)
         -- Sell tab (boughtGoods) + its reserve caps now stale; the next select re-pulls goods, and the
-        -- server's sendGoods response carries the refreshed max-limit map (receiveMaxLimits).
+        -- server's sendGoods response carries the refreshed stock-view maps (receiveStockSync).
         goodsDirty = true
     end
 end

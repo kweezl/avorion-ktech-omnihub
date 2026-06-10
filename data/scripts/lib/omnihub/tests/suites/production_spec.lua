@@ -113,6 +113,22 @@ return function(runner)
         near(r.consumed.ore, 16)
     end)
 
+    runner:test("maxRates doubles a boosted module's contribution (boost-aware max)", function()
+        -- A boosted (cycle runs at 2x), B not: only A's terms double vs the unboosted test above.
+        local tt = { A = 30, B = 60 }
+        local r = OmniHubProduction.maxRates({ A = 2, B = 3 }, resolve, tt, 15, { A = true })
+        near(r.produced.plate, 27, nil, "A 12*2 + B 3")
+        near(r.produced.scrap, 8,  nil, "A 4*2 (garbage doubles too)")
+        near(r.consumed.ore,   52, nil, "A 20*2 + B 12")
+        near(r.consumed.water, 16, nil, "A 8*2")
+    end)
+
+    runner:test("maxRates with an explicit false/absent boost entry stays unboosted", function()
+        local tt = { A = 30, B = 60 }
+        local r = OmniHubProduction.maxRates({ A = 2, B = 3 }, resolve, tt, 15, { A = false })
+        near(r.produced.plate, 15, nil, "identical to the no-boost-map case")
+    end)
+
     -- ── clampInstall (install/uninstall quantity: requested, or fall back to actual) ──
     runner:test("clampInstall returns the requested amount when available", function()
         eq(OmniHubProduction.clampInstall(3, 5, math.huge), 3, "want 3, have 5 -> 3")

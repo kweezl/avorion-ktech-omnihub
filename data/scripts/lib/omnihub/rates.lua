@@ -39,6 +39,26 @@ function OmniHubRates.recordConsumed(s, name, amount)
     if amount and amount > 0 then bump(s.consumed, name, s.cursor, amount) end
 end
 
+-- Smooth per-tick accrual for an in-progress cycle: records `fraction` of one cycle's recipe
+-- amounts (× module count) — results and garbages as produced, ingredients as consumed. Driven by
+-- the production tick with the progress advanced that tick, so the windowed "actual" is a true
+-- rolling average. The old lump-at-completion recording let a 60s window catch ceil(60/ttm)
+-- completions and read ABOVE the theoretical max (the C>L flicker); fractions over one cycle sum
+-- to 1, so per-cycle totals still match exactly.
+function OmniHubRates.recordCycle(s, recipe, count, fraction)
+    if not recipe or not fraction or fraction <= 0 then return end
+    local mult = (count or 1) * fraction
+    for _, res in pairs(recipe.results or {}) do
+        OmniHubRates.recordProduced(s, res.name, res.amount * mult)
+    end
+    for _, gar in pairs(recipe.garbages or {}) do
+        OmniHubRates.recordProduced(s, gar.name, gar.amount * mult)
+    end
+    for _, ing in pairs(recipe.ingredients or {}) do
+        OmniHubRates.recordConsumed(s, ing.name, ing.amount * mult)
+    end
+end
+
 -- Rolls the window forward by `seconds`, zeroing each new current bucket across all tracked goods.
 function OmniHubRates.advance(s, seconds)
     if not seconds or seconds <= 0 then return end

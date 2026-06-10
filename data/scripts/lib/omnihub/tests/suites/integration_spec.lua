@@ -239,7 +239,6 @@ return function(runner)
         -- prodCycles = 0 must floor to 1 (0 would silently halt production); buyLimit = 0 is allowed.
         OmniHub.applyHubConfig({
             activelyRequest = true, activelySell = true,
-            deliveredIds = {}, deliveringIds = {},
             limitBuy = 0, limitBase = 200, limitCycles = 0,
         })
 
@@ -266,7 +265,7 @@ return function(runner)
         OmniHub.restore(snapshot)
     end)
 
-    runner:test("secure/restore preserves marks, stats and transfer selections", function()
+    runner:test("secure/restore preserves marks and stats", function()
         local snapshot = OmniHub.secure()
         local key = firstCatalogKey()
 
@@ -276,7 +275,7 @@ return function(runner)
 
         OmniHub.restore({ installed = { [key] = 1 }, productionProgress = {}, traderCooldown = 7,
                           sellEnabled = { Widget = false }, buyEnabled = { Ore = false }, stats = stats,
-                          chosenDelivered = {}, chosenDelivering = {}, tradingData = snapshot.tradingData })
+                          tradingData = snapshot.tradingData })
 
         local after = OmniHub.secure()
         eq(after.stats.lifetimeProfit, 1234, "lifetime profit persists")

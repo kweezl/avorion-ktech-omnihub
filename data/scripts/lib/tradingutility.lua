@@ -1,0 +1,15 @@
+-- OmniHub extension fragment for the vanilla trading utility.
+--
+-- The engine's VFS CONCATENATES every file at the same script path (base game first, then each
+-- enabled mod) into one Lua chunk, injecting mod fragments immediately before the file's trailing
+-- `return TradingUtility` — so the vanilla file-locals (`TradingUtility`, `scripts`) are in scope
+-- here, and EVERY VM that include()s this lib (sector/traders.lua, the roaming economy, trade
+-- overview UIs, our own controller) sees the patched allow-list.
+--
+-- This is the only mechanism that works: each script namespace runs in its own Lua VM with its own
+-- copy of every included lib, so a runtime table.insert from the controller's VM would be invisible
+-- to the ambient-trader spawner. Entries are "/basename.lua" suffixes the engine resolves against
+-- the station's attached script paths via Entity():invokeFunction.
+--
+-- NOTE: this file is NOT a standalone module — it only parses as part of the merged chunk.
+table.insert(TradingUtility.getTradeableScripts(), "/omnihubcontroller.lua")

@@ -82,13 +82,22 @@ OmniHubConfig.schema = {
         max         = 600,
     },
     {
-        key         = "transportVolume",
+        key         = "maxTradersPerWave",
         type        = "number",
-        title       = "Transport volume",
-        description = "Goods volume moved per inter-station transfer tick (deliver products / fetch resources).",
-        default     = 20,
+        title       = "Max traders per wave",
+        description = "Upper limit of NPC traders spawned per trade wave; additionally capped by the hub's free docking positions.",
+        default     = 3,
         min         = 1,
-        max         = 1000,
+        max         = 6,
+    },
+    {
+        key         = "offlineWaveDelayMultiplier",
+        type        = "number",
+        title       = "Offline wave delay multiplier",
+        description = "Offline trade waves run every (trader request cooldown x this) seconds, modelling the docking latency online traders pay. Higher = slower offline trading.",
+        default     = 3,
+        min         = 1,
+        max         = 10,
     },
 }
 

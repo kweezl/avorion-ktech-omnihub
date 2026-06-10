@@ -212,7 +212,10 @@ end
 -- "actual/max" rates. For each installed module, rate = amount * count / cycleTime; summed per good
 -- across all modules. `timeToProduce[key]` is the per-module cycle time (falls back to minTime).
 -- Returns { produced = { [name] = perMin }, consumed = { [name] = perMin } }.
-function OmniHubProduction.maxRates(installed, resolveRecipe, timeToProduce, minTime)
+-- `boostedByKey` (optional): { [moduleKey] = true } for modules currently running boosted — a
+-- boosted cycle advances at 2x (tickRecipe), so the achievable max doubles. Including it keeps the
+-- displayed ceiling honest: without it a boosted module's measured rate sits at 200% of "max".
+function OmniHubProduction.maxRates(installed, resolveRecipe, timeToProduce, minTime, boostedByKey)
     local produced, consumed = {}, {}
     minTime = minTime or 15
 
@@ -222,6 +225,7 @@ function OmniHubProduction.maxRates(installed, resolveRecipe, timeToProduce, min
             local tt = (timeToProduce and timeToProduce[key]) or minTime
             if tt <= 0 then tt = minTime end
             local perMin = 60 / tt
+            if boostedByKey and boostedByKey[key] then perMin = perMin * 2 end
 
             for _, res in pairs(prod.results) do
                 produced[res.name] = (produced[res.name] or 0) + res.amount * count * perMin

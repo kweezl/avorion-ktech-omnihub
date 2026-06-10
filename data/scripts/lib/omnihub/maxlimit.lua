@@ -20,32 +20,37 @@ package.path = package.path .. ";data/scripts/lib/?.lua"
 --       max() reduces to that single role. Scaling by throughput means a high-volume good gets a
 --       proportionally larger limit, replacing the vanilla even-split that choked big producers (cargo /
 --       numTradeSlots gave each good the same tiny cap regardless of output).
---   buy-marked only (not produced/consumed) -> L = buyLimit   (flat passthrough buffer)
---   anything else (e.g. a sell-only looted good)            -> L = 0  (no auto-acquisition, no limit)
+--   buy- OR sell-marked only (not produced/consumed) -> L = buyLimit  (flat passthrough buffer).
+--       Sell-only goods need the cap too: with no entry, getMaxStock()==0 made the UI render 0/0
+--       AND getMaxGoods()==0 excluded the good from NPC trading entirely (the Aluminum case).
+--   anything else (unmarked, not produced/consumed)   -> L = 0 (no auto-acquisition, no limit)
 --
 -- O(n) over the union of relevant goods. The controller caches the result and recomputes ONLY on
 -- module or configuration changes — never per getMaxStock call (that path is hot).
 OmniHubMaxLimit = {}
 
 -- agg         = OmniHubProduction.aggregate(...) result (ingAmounts / resAmounts / garAmounts).
--- boughtNames = good names the hub buys (consumed defaults + explicit buy marks), from buildTradeLists.
+-- boughtNames = good names the hub buys (explicit buy marks), from buildTradeLists.
 -- params      = { buyLimit, prodBase, prodCycles } (units / multipliers; nil treated as 0).
+-- soldNames   = good names the hub sells (explicit sell marks); optional for back-compat.
 -- Returns { [name] = limitUnits } for every good that has a limit (others simply absent -> 0).
-function OmniHubMaxLimit.compute(agg, boughtNames, params)
+function OmniHubMaxLimit.compute(agg, boughtNames, params, soldNames)
     params = params or {}
     local buyLimit   = params.buyLimit or 0
     local prodBase   = params.prodBase or 0
     local prodCycles = params.prodCycles or 0
 
-    local bought = {}
-    for _, n in ipairs(boughtNames or {}) do bought[n] = true end
+    local marked = {}
+    for _, n in ipairs(boughtNames or {}) do marked[n] = true end
+    for _, n in ipairs(soldNames or {})   do marked[n] = true end
 
-    -- Every good that could have a limit: produced/consumed (from the aggregate) + bought (from marks).
+    -- Every good that could have a limit: produced/consumed (from the aggregate) + explicitly
+    -- traded (buy or sell marks).
     local names = {}
     for n in pairs(agg.ingAmounts) do names[n] = true end
     for n in pairs(agg.resAmounts) do names[n] = true end
     for n in pairs(agg.garAmounts) do names[n] = true end
-    for n in pairs(bought)         do names[n] = true end
+    for n in pairs(marked)         do names[n] = true end
 
     local limits = {}
     for name in pairs(names) do
@@ -54,7 +59,7 @@ function OmniHubMaxLimit.compute(agg, boughtNames, params)
         if produced > 0 or consumed > 0 then
             -- MAX of the two role buffers (not sum): an intermediate good shares one stock pile.
             limits[name] = prodBase * prodCycles * math.max(produced, consumed)
-        elseif bought[name] then
+        elseif marked[name] then
             limits[name] = buyLimit
         else
             limits[name] = 0

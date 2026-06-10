@@ -11,19 +11,24 @@ OmniHubTestRegistry = {}
 OmniHubTestRegistry.pure = {
     "config_spec",
     "goodstable_spec",
+    "log_spec",
     "modconfig_spec",
     "moduledefs_spec",
     "moduleitem_spec",
     "maxlimit_spec",
+    "offlinesim_spec",
     "production_spec",
     "rates_spec",
     "stats_spec",
     "storage_spec",
     "supplier_spec",
+    "tradingdecision_spec",
     "trading_spec",
+    "wave_spec",
 }
 
 OmniHubTestRegistry.integration = {
+    "autotrade_spec",
     "integration_spec",
 }
 
