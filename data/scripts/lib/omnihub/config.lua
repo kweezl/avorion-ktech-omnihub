@@ -8,6 +8,10 @@ package.path = package.path .. ";data/scripts/lib/?.lua"
 -- get() and the derived `defaults` table convert them to the fractions callers expect.
 OmniHubConfig = {}
 
+-- Unit conversion for foundingCostMillions: the schema declares the option in millions of
+-- credits (a 15,000,000 text box is unusable); callers that need credits multiply by this.
+OmniHubConfig.CREDITS_PER_MILLION = 1000000
+
 -- Keys MCM stores as integer percents; converted to fractions on read.
 local PERCENT_KEYS = { dropChance = true, modulePriceFactor = true }
 

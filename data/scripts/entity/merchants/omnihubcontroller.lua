@@ -107,6 +107,10 @@ local recommendedCapacity = 0  -- assembly needed for max speed; recomputed in r
 -- buyLimit = flat reserve for buy-marked passthrough goods; produced/consumed goods reserve
 -- prodBase * prodCycles * perCycleAmount. See maxlimit.lua for the role resolution.
 local MAXLIMIT_DEFAULTS = { buyLimit = 1000, prodBase = 200, prodCycles = 1 }
+-- Upper clamp bounds for the owner-set values above (applyHubConfig); guard against a tampered
+-- client, far above any legitimate setting.
+local MAXLIMIT_UNITS_CAP  = 1000000
+local MAXLIMIT_CYCLES_CAP = 10000
 local hubMaxLimit = { buyLimit = MAXLIMIT_DEFAULTS.buyLimit,
                      prodBase       = MAXLIMIT_DEFAULTS.prodBase,
                      prodCycles     = MAXLIMIT_DEFAULTS.prodCycles }
@@ -1282,9 +1286,9 @@ function OmniHub.applyHubConfig(cfg)
     -- good's limit and silently halt all production.
     local limitsChanged =
             cfg.tradeStock ~= nil or cfg.prodBase ~= nil or cfg.prodCycles ~= nil
-    hubMaxLimit.buyLimit   = math.floor(clamp(cfg.tradeStock or hubMaxLimit.buyLimit,   0, 1000000))
-    hubMaxLimit.prodBase   = math.floor(clamp(cfg.prodBase   or hubMaxLimit.prodBase,   1, 1000000))
-    hubMaxLimit.prodCycles = math.floor(clamp(cfg.prodCycles or hubMaxLimit.prodCycles, 1, 10000))
+    hubMaxLimit.buyLimit   = math.floor(clamp(cfg.tradeStock or hubMaxLimit.buyLimit,   0, MAXLIMIT_UNITS_CAP))
+    hubMaxLimit.prodBase   = math.floor(clamp(cfg.prodBase   or hubMaxLimit.prodBase,   1, MAXLIMIT_UNITS_CAP))
+    hubMaxLimit.prodCycles = math.floor(clamp(cfg.prodCycles or hubMaxLimit.prodCycles, 1, MAXLIMIT_CYCLES_CAP))
     if limitsChanged then
         OmniHub.recomputeMaxLimits()
         -- Push only the stock-view maps so the open buy/sell stock column updates in place — no full

@@ -34,6 +34,8 @@ return function(runner)
     runner:test("module contract: get + defaults exist", function()
         eq(type(OmniHubConfig.get),      "function", "OmniHubConfig.get is a function")
         eq(type(OmniHubConfig.defaults), "table",    "OmniHubConfig.defaults is a table")
+        -- stationfounder.lua multiplies by this at chunk-load time; nil would break founding.
+        eq(OmniHubConfig.CREDITS_PER_MILLION, 1000000, "credits-per-million unit constant")
         for _, key in ipairs({"moduleCap", "dropChance", "modulePriceFactor",
                               "traderRequestCooldown", "sellingModuleCount", "stockMin", "stockMax",
                               "foundingCostMillions"}) do

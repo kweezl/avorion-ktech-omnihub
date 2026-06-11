@@ -23,5 +23,5 @@ table.insert(StationFounder.stations, {
         -- would reach a tests entry, so listing it here double-attaches it (two interaction
         -- options). The controller is the single attach point.
     },
-    price = OmniHubConfig.get("foundingCostMillions") * 1000000,
+    price = OmniHubConfig.get("foundingCostMillions") * OmniHubConfig.CREDITS_PER_MILLION,
 })
