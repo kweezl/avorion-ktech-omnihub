@@ -81,7 +81,7 @@ local FAIL_TEXT = {
     cantpay     = "Trade failed: can't afford %s x%d — deposit credits into the faction account.",
     nostock_in  = "Trade failed: delivery of %s x%d moved no goods (stock cap reached or the faction can't pay).",
     nostock_out = "Trade failed: pickup of %s x%d moved no goods (nothing in stock, buyer can't pay, or the ship's hold is full).",
-    wave        = "Trade failed: immediate trade of %s x%d (error code %s).",
+    wave        = "Trade failed: immediate trade of %s x%d (%s).",
 }
 
 function OmniHubEvents.tradeFailed(s, kind, goodName, amount, extra)
@@ -139,18 +139,29 @@ end
 -- A module key is tracked while stalled on an ACTIONABLE reason ("ingredient", "space" — a
 -- "maxstock" stall is the buffer working as intended). Crossing STALL_THRESHOLD marks it
 -- report-pending; advance() batches all pending keys into ONE summary per STALL_INTERVAL. A
--- reason change restarts the timer (it is a different problem). Going un-stalled after having
--- been reported queues the product for a batched "resumed" line on the same cadence.
+-- reason change restarts the timer (it is a different problem); a DETAIL change within the same
+-- reason (the first missing ingredient shifting, e.g. Coal -> Iron) keeps the timer and the
+-- reported latch — it is one continuous stall, and resetting would let oscillating shortages
+-- dodge the threshold forever. The "resumed" line is queued only when the module is genuinely
+-- not stalled; a reported stall drifting into "maxstock" stays latched silently until it
+-- actually produces (a full output buffer is not a recovery).
 -- Call with `stalled = false` on every tick a module is NOT stalled (including while a cycle is
 -- in progress) so recovery is detected promptly; retainStalls covers uninstall, not recovery.
 function OmniHubEvents.recordStallState(s, key, product, stalled, reason, detail)
     local actionable = stalled and (reason == "ingredient" or reason == "space")
     local e = s.stalls[key]
     if actionable then
-        if not e or e.reason ~= reason or e.detail ~= detail then
+        if not e or e.reason ~= reason then
             s.stalls[key] = { product = product, reason = reason, detail = detail,
                               stalledFor = 0, reported = false }
+        elseif e.detail ~= detail then
+            e.detail = detail
         end
+    elseif stalled then
+        -- Non-actionable stall (output at max stock). Keep a REPORTED entry so the eventual real
+        -- resume still fires; drop an unreported one — its timer must not keep accruing against
+        -- a reason that no longer holds.
+        if e and not e.reported then s.stalls[key] = nil end
     else
         if e then
             if e.reported and e.product ~= nil then s.resumed[e.product] = true end

@@ -145,6 +145,27 @@ return function(runner)
         fls(s.latches.assembly)
     end)
 
+    runner:test("secure/restore round-trips the assembly latch too", function()
+        local s = OmniHubEvents.new()
+        OmniHubEvents.checkAssembly(s, 50, 200)
+        drain(s, 1)
+        local s2 = OmniHubEvents.new()
+        OmniHubEvents.restore(s2, OmniHubEvents.secure(s))
+        OmniHubEvents.checkAssembly(s2, 50, 200)
+        eq(#drain(s2, 1), 0, "condition still held across load -> no duplicate event")
+        OmniHubEvents.checkAssembly(s2, 200, 200)
+        eq(#drain(s2, 1), 1, "resolve still fires after load")
+    end)
+
+    runner:test("digest window re-arms after a flush", function()
+        local s = OmniHubEvents.new()
+        OmniHubEvents.recordTrade(s, "sell", "Steel", 10, 100)
+        eq(#drain(s, 300), 1, "first digest")
+        OmniHubEvents.recordTrade(s, "sell", "Steel", 5, 50)
+        eq(#drain(s, 299), 0, "new window counts from the new first trade")
+        eq(#drain(s, 1), 1, "second digest at +300s")
+    end)
+
     -- ── production stalls ────────────────────────────────────────
     -- helper: tick `n` seconds in `step`-sized slices, re-feeding the same stall state each tick
     -- (mirrors the controller, which feeds tickRecipe's outcome every production tick).
@@ -192,6 +213,35 @@ return function(runner)
         eq(#stallFor(s, "k1", "Steel Factory", "space", nil, 590, 10), 0,
             "timer restarted on reason change — still silent")
         tru(#stallFor(s, "k1", "Steel Factory", "space", nil, 20, 10) >= 1, "new reason reports after its own 600s")
+    end)
+
+    runner:test("detail change within the same reason keeps the stall timer", function()
+        -- The FIRST missing ingredient can oscillate (canStartCycle reports one at a time, and
+        -- other modules may consume shared ingredients); the stall is still continuous.
+        local s = OmniHubEvents.new()
+        stallFor(s, "k1", "Steel Factory", "ingredient", "Coal", 590, 10)
+        local due = stallFor(s, "k1", "Steel Factory", "ingredient", "Iron", 20, 10)
+        tru(#due >= 1, "reported despite the blocking ingredient changing")
+        tru(due[1].text:find("missing: Iron", 1, true) ~= nil, "names the current blocker: " .. due[1].text)
+    end)
+
+    runner:test("maxstock after a reported stall is not a resume; producing later is", function()
+        local s = OmniHubEvents.new()
+        stallFor(s, "k1", "Steel Factory", "ingredient", "Coal", 610, 10)            -- reported
+        OmniHubEvents.recordStallState(s, "k1", "Steel Factory", true, "maxstock", "Steel")
+        eq(#drain(s, 300), 0, "full output buffer is not a recovery — no resume line")
+        OmniHubEvents.recordStallState(s, "k1", "Steel Factory", false)
+        local due = drain(s, 300)
+        eq(#due, 1, "real resume once producing")
+        tru(due[1].text:find("Steel Factory", 1, true) ~= nil, due[1].text)
+    end)
+
+    runner:test("maxstock clears an unreported stall timer", function()
+        local s = OmniHubEvents.new()
+        stallFor(s, "k1", "Steel Factory", "ingredient", "Coal", 590, 10)
+        OmniHubEvents.recordStallState(s, "k1", "Steel Factory", true, "maxstock", "Steel")
+        eq(#stallFor(s, "k1", "Steel Factory", "ingredient", "Coal", 20, 10), 0,
+            "timer restarted — the 590s did not count across the maxstock phase")
     end)
 
     runner:test("resume after a report emits one batched info line; unreported stalls resume silently", function()
