@@ -32,8 +32,14 @@ function OmniHubUIStatistics.new(tab, size)
     self.storageSummary = tab:createLabel(vec2(pad, 70), "", 13)
     self.storageSummary.bold = true
 
+    -- Production capacity vs the recommended value for max speed (server-computed; see
+    -- OmniHubProduction.recommendedCapacity). Red when under.
+    self.capacityLabel = tab:createLabel(vec2(pad, 88), "", 13)
+    self.capacityLabel.bold = true
+    self.capacityLabel.tooltip = "Assembly blocks raise production capacity. At or above the recommended value every module cycles at maximum speed; extra capacity beyond it does not speed up production further."%_t
+
     -- Split the area below into storage (top) and transactions (bottom).
-    local areaTop, mid = 92, math.floor(92 + (h - 92) * 0.5)
+    local areaTop, mid = 110, math.floor(110 + (h - 110) * 0.5)
     self.storageRows = {}
 
     local sHdr = tab:createLabel(vec2(pad, areaTop), "Max Limit (units, volume)"%_t, 13)
@@ -89,6 +95,21 @@ function OmniHubUIStatistics:setStorage(storage)
         label.size = vec2(width, rowH); label:setLeftAligned()
         self.storageRows[#self.storageRows + 1] = { label }
     end
+end
+
+-- setCapacity(capacity, recommended) — both server numbers; recommended 0 means "no modules".
+function OmniHubUIStatistics:setCapacity(capacity, recommended)
+    capacity, recommended = capacity or 0, recommended or 0
+    if recommended <= 0 then
+        self.capacityLabel.caption = string.format("Production capacity: %d", math.floor(capacity))
+        self.capacityLabel.color   = ColorRGB(0.8, 0.8, 0.8)
+        return
+    end
+    local pct = math.floor(capacity / recommended * 100 + 0.5)
+    self.capacityLabel.caption = string.format("Production capacity: %d / %d recommended (%d%%)",
+        math.floor(capacity), math.floor(recommended), pct)
+    self.capacityLabel.color = capacity < recommended and ColorRGB(1.0, 0.5, 0.5)
+                                                       or ColorRGB(0.8, 0.8, 0.8)
 end
 
 -- set(lifetime, lastHour, txns) where txns = { {kind, good, amount, price, partner}, ... } newest-first.

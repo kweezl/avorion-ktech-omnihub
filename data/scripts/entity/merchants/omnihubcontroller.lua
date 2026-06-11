@@ -1118,7 +1118,7 @@ function OmniHub.sendStats()
     if not callerIsOwner() then return end  -- profit/trades/storage are owner-only
     invokeClientFunction(Player(callingPlayer), "receiveStats",
         OmniHubStats.lifetimeProfit(stats), OmniHubStats.lastHourProfit(stats), OmniHubStats.recent(stats, 10),
-        OmniHub.collectStorage())
+        OmniHub.collectStorage(), OmniHub.productionCapacity, recommendedCapacity)
 end
 callable(OmniHub, "sendStats")
 
@@ -1834,10 +1834,11 @@ function OmniHub.receiveStockDelta(name, amount)
     OmniHub.updateBoughtGoodAmount(name)
 end
 
-function OmniHub.receiveStats(lifetime, lastHour, txns, storage)
+function OmniHub.receiveStats(lifetime, lastHour, txns, storage, capacity, recommended)
     if statisticsUI then
         statisticsUI:set(lifetime, lastHour, txns)
         statisticsUI:setStorage(storage)
+        statisticsUI:setCapacity(capacity, recommended)
     end
 end
 
