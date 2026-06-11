@@ -614,8 +614,10 @@ function OmniHub.rebuild()
 
     -- Owner notifications: condition inputs (limits, capacity, install set) only change through
     -- here, onBlockPlanChanged, or recomputeMaxLimits — evaluate the latches at each.
-    recommendedCapacity = OmniHubProduction.recommendedCapacity(
-        installed, OmniHubModuleDefs.resolveRecipe, goods, MIN_TIME_TO_PRODUCE)
+    -- ceil: the raw recommendation is fractional, but the UI floors what it shows — an exact
+    -- compare would latch "capacity 1000 below recommended 1000" with no visible way to clear it.
+    recommendedCapacity = math.ceil(OmniHubProduction.recommendedCapacity(
+        installed, OmniHubModuleDefs.resolveRecipe, goods, MIN_TIME_TO_PRODUCE))
     OmniHubEvents.retainStalls(hubEvents, installed)
     OmniHubEvents.checkStorage(hubEvents, OmniHub.collectStorage().over)
     OmniHubEvents.checkAssembly(hubEvents, OmniHub.productionCapacity, recommendedCapacity)
@@ -763,6 +765,22 @@ local function waveRng()
     }
 end
 
+-- buyGoods/sellGoods error codes (tradingmanager.lua:1168/1215), mapped per trade direction to
+-- owner-readable phrases for the "wave" failure event; unmapped codes fall back to the raw
+-- "error code N". deliver = hub buys (buyGoods), pickup = hub sells (sellGoods).
+local WAVE_FAIL_REASON = {
+    deliver = {
+        [2] = "stock cap reached",
+        [3] = "the faction can't afford it — deposit credits into the faction account",
+        [4] = "buying from other factions is disabled",
+    },
+    pickup = {
+        [1] = "nothing in stock",
+        [2] = "the buyer can't pay",
+        [4] = "selling to other factions is disabled",
+    },
+}
+
 -- Immediate-mode wave (sector loaded, no players): vanilla shape — instant buyGoods/sellGoods
 -- against the nearest faction, no ships. The wrappers below record statistics as usual.
 local function applyWaveImmediate(manifests, tradingFactionIndex)
@@ -778,7 +796,9 @@ local function applyWaveImmediate(manifests, tradingFactionIndex)
                     err = OmniHub.sellGoods(good, op.amount, tradingFactionIndex)
                 end
                 if err ~= 0 then
-                    OmniHubEvents.tradeFailed(hubEvents, "wave", op.name, op.amount, err)
+                    local reasons = WAVE_FAIL_REASON[op.kind]
+                    OmniHubEvents.tradeFailed(hubEvents, "wave", op.name, op.amount,
+                        (reasons and reasons[err]) or ("error code " .. tostring(err)))
                 end
             end
         end
@@ -1022,9 +1042,13 @@ function OmniHub.buyFromShip(shipIndex, goodName, amount, noDockCheck)
 
         if unit > 0 and fullCost > 0 and not faction:canPayMoney(fullCost)
                 and partial > 0 and partial < (tonumber(amount) or 0) then
-            OmniHubEvents.tradeFailed(hubEvents, "cantpay", goodName, amount)
             base_buyFromShip(shipIndex, goodName, partial, noDockCheck)
+            -- Partial retry succeeded: the digest records the (smaller) buy; a failure warning
+            -- here would contradict it. If it also moved nothing, money is the KNOWN cause —
+            -- one specific event, not cantpay + nostock for the same docking.
             if OmniHub.getNumGoods(goodName) > before then return r end
+            OmniHubEvents.tradeFailed(hubEvents, "cantpay", goodName, amount)
+            return r
         end
 
         OmniHubEvents.tradeFailed(hubEvents, "nostock_in", goodName, amount)
@@ -1889,7 +1913,7 @@ function OmniHub.onPriceSliderMoved()
 end
 
 function OmniHub.onPriceSliderCommit()
-    if not configUI then return end
+    if not configUI or not configUI.synced then return end  -- pre-sync guard, see onConfigChanged
     local buyF, sellF = configUI:readPrices()
     if goodsUI then goodsUI:setPriceFactors(sellF, buyF) end   -- client-side price prediction
     invokeServerFunction("setPriceFactors", buyF, sellF)
@@ -1905,7 +1929,10 @@ function OmniHub.onTradeTabSelected()
 end
 
 function OmniHub.onConfigChanged()
-    if configUI then invokeServerFunction("applyHubConfig", configUI:read()) end
+    -- Pre-sync guard: before the first receiveHubConfig the widgets still show constructor
+    -- defaults (checkboxes unchecked), so pushing read() would persist settings the player never
+    -- touched. The dropped click is harmless — the imminent sync repaints the real state.
+    if configUI and configUI.synced then invokeServerFunction("applyHubConfig", configUI:read()) end
 end
 
 -- Modules tab: Install/Uninstall send (key, qty) from the row's shared quantity field; the server

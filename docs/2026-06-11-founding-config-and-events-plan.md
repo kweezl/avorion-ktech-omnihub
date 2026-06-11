@@ -20,8 +20,12 @@ schema/RPC patterns exactly.
   `return X` stays unconditional.
 - Run the pure suite after every lib change: `"$LUA_DIR/lua54.exe" tests/run.lua` from repo root
   (exit 0 = pass).
-- Event texts are plain pre-formatted English strings (the pure module cannot use `%_t`, and
-  vanilla also sends server-locale text for faction messages).
+- Event texts are plain pre-formatted English strings. This is a KNOWN LOCALIZATION LIMITATION,
+  accepted deliberately: vanilla normally sends `%_T` format strings + args translated
+  client-side (e.g. lostships.lua, tradingmanager's sendError), but the digest/stall summaries
+  have variable-length content (good lists, grouped reasons) that does not fit a fixed format
+  string, and the pure module cannot call `%_t`. Localizing later means moving to
+  `{fmt, args}`-shaped payloads.
 - Commit after each task.
 
 ---

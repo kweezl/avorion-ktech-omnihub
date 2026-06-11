@@ -58,6 +58,11 @@ end
 function OmniHubUIConfig.new(tab, size, opts)
     local self = setmetatable({}, OmniHubUIConfig)
     self.opts            = opts
+    -- Until the first server payload lands (apply), every widget still shows its constructor
+    -- default — checkboxes UNCHECKED. A read() pushed before then would silently persist those
+    -- defaults (e.g. turn off event notifications the player never touched), so the controller's
+    -- change handler drops pushes while synced is false.
+    self.synced          = false
 
     local pad  = 10
     local left = UIVerticalLister(Rect(vec2(pad, pad), vec2(size.x - pad, size.y - 60)), 8, 0)
@@ -138,9 +143,10 @@ function OmniHubUIConfig.new(tab, size, opts)
     return self
 end
 
--- Applies a server config table to the widgets (no callbacks fire).
+-- Applies a server config table to the widgets (no callbacks fire) and marks the tab synced.
 function OmniHubUIConfig:apply(cfg)
     if not cfg then return end
+    self.synced = true
     self.activeBuyCheck:setCheckedNoCallback(cfg.activelyRequest ~= false)
     self.activeSellCheck:setCheckedNoCallback(cfg.activelySell ~= false)
     self.eventsCheck:setCheckedNoCallback(cfg.events ~= false)

@@ -139,6 +139,12 @@ local config  = (ok and mcm) and mcm.bind("ktech-omnihub") or nil
 function OmniHubConfig.get(key)
     if config then
         local raw = config.get(key)  -- MCM returns the schema default when unset, nil if unknown
+        if raw == nil then
+            -- A stale MCM registration (e.g. schema cached from an older mod version) doesn't
+            -- know the key. Callers do arithmetic/comparisons on the result, so nil must never
+            -- escape — fall back to the built-in default.
+            return OmniHubConfig.defaults[key]
+        end
         if PERCENT_KEYS[key] and type(raw) == "number" then
             raw = raw / 100
         end

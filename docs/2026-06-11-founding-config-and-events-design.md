@@ -177,6 +177,9 @@ Other `hubLog` lines (rebuild, sync, director) stay — events do not cover them
 ## Out of scope
 
 - Per-event-type toggles (master checkbox only, for now).
+- Localization of event texts: they ship as pre-formatted English strings because the summaries'
+  variable-length content (good lists, grouped stall reasons) does not fit vanilla's fixed
+  `%_T`-format-plus-args pattern. Localizing later requires `{fmt, args}` payloads.
 - Events from the offline director simulation (including wake summaries).
 - Any new lazy-reload triggers or per-tick syncs (per CLAUDE.md networking rules).
 - Repeat-failure cooldowns, excluding the owner's own UI trades from the digest, and debouncing

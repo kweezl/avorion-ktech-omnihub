@@ -3,7 +3,12 @@
 -- StationFounder and StationFounder.stations are already defined above.
 
 -- Founding price comes from the mod config (MCM-backed when installed, built-in default
--- otherwise). Evaluated when this script loads — i.e. fresh on each founder interaction.
+-- otherwise). Evaluated when this script loads — i.e. fresh on each founder interaction — and
+-- INDEPENDENTLY in the client (displayed price) and server (charged price) VMs: with MCM
+-- installed the value must reach both VMs or the UI shows a different price than is charged
+-- (without MCM both fall back to the same built-in default). Verify in-game with a non-default
+-- cost when MCM is present. An error while this chunk loads would break the WHOLE concatenated
+-- founder script (every station type), which is why get() guarantees a non-nil number.
 package.path = package.path .. ";data/scripts/lib/?.lua"
 local OmniHubConfig = include("lib/omnihub/config")
 
