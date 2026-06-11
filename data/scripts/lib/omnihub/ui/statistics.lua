@@ -67,14 +67,14 @@ function OmniHubUIStatistics:setStorage(storage)
 
     if storage.over then
         local warn = self.storageFrame:createLabel(vec2(pad, pad),
-            "Cargo too small for all max limits — some production may stall. Add cargo space."%_t, 12)
+            "Cargo too small for all goods stocks — some production may stall. Add cargo space."%_t, 12)
         warn.size = vec2(width, rowH); warn.color = ColorRGB(1.0, 0.6, 0.6)
         self.storageRows[#self.storageRows + 1] = { warn }
     end
 
     if #list == 0 then
         local empty = self.storageFrame:createLabel(vec2(pad, pad + (storage.over and (rowH + 2) or 0)),
-            "No goods have a max limit yet."%_t, 12)
+            "No goods have a max stock yet."%_t, 12)
         empty.size = vec2(width, rowH)
         self.storageRows[#self.storageRows + 1] = { empty }
         return

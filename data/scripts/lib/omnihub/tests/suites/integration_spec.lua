@@ -236,10 +236,10 @@ return function(runner)
         OmniHub.restore({ installed = { [key] = 1 }, productionProgress = {}, traderCooldown = 0,
                           sellEnabled = {}, buyEnabled = {}, tradingData = snapshot.tradingData })
 
-        -- prodCycles = 0 must floor to 1 (0 would silently halt production); buyLimit = 0 is allowed.
+        -- prodCycles = 0 must floor to 1 (0 would silently halt production); tradeStock = 0 is allowed.
         OmniHub.applyHubConfig({
             activelyRequest = true, activelySell = true,
-            limitBuy = 0, limitBase = 200, limitCycles = 0,
+            tradeStock = 0, prodBase = 200, prodCycles = 0,
         })
 
         local lim = OmniHub.secure().maxLimit
