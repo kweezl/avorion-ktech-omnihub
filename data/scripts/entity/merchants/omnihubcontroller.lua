@@ -1454,6 +1454,7 @@ function OmniHub.buildGoodRow(name, maxR, sellF, buyF)
     return {
         name        = name,
         icon        = g.icon or "",
+        stock       = OmniHub.getNumGoods(name),
         prateActual = OmniHubRates.producedPerMin(rates, name),
         prateMax    = maxR.produced[name] or 0,
         crateActual = OmniHubRates.consumedPerMin(rates, name),
@@ -1488,6 +1489,27 @@ function OmniHub.sendHubGoodsTo(player)
 
     invokeClientFunction(player, "receiveHubGoods", list)
 end
+
+-- Periodic Goods-tab tick (the client pulls every 30s while the tab is visible): minimal live
+-- values only — stock + measured rate actuals. Goods with nothing to report (no stock, no measured
+-- production/consumption) are omitted; the client zeroes everything first (patchLive), so an
+-- omitted good correctly renders empty/idle. No prices/market (regionalInfo is the expensive
+-- per-good call) and no max rates (those change only on install/uninstall, which has its own delta).
+function OmniHub.sendGoodsTick()
+    if not onServer() then return end
+    if not callerIsOwner() then return end  -- Goods tab (stock/rates) is owner-only
+    local rows = {}
+    for name in pairs(tradeableGoods) do
+        local stock = OmniHub.getNumGoods(name)
+        local prate = OmniHubRates.producedPerMin(rates, name)
+        local crate = OmniHubRates.consumedPerMin(rates, name)
+        if stock > 0 or prate > 0 or crate > 0 then
+            rows[#rows + 1] = { name = name, stock = stock, prate = prate, crate = crate }
+        end
+    end
+    invokeClientFunction(Player(callingPlayer), "receiveGoodsTick", rows)
+end
+callable(OmniHub, "sendGoodsTick")
 
 -- Goods rows whose rates change when a module is installed/uninstalled = the module recipe's
 -- ingredients + results + garbages (deduped). Sent in the install/uninstall delta to patch the Goods
@@ -1527,6 +1549,19 @@ local goodsUI, statisticsUI, configUI, modulesUI
 -- Buy/Sell tables are refreshed lazily: a price-slider or Goods-mark change sets this, and selecting
 -- the Buy or Sell tab pulls fresh data only when set.
 local goodsDirty = false
+
+-- Goods-tab live tick: while that tab is visible, updateClient pulls a minimal stock/rates refresh
+-- (sendGoodsTick) every GOODS_TICK_INTERVAL seconds. Selecting the tab pulls immediately and
+-- restarts the countdown; opening the window restarts it too (the full sync just ran).
+local GOODS_TICK_INTERVAL = 30
+local goodsTickTimer = 0
+
+-- Owner = the station's faction or its alliance; gates the owner-only tabs and their data pulls.
+local function clientIsOwner()
+    local player, faction = Player(), Faction()
+    return (player.index == faction.index)
+        or (player.allianceIndex and player.allianceIndex == faction.index) or false
+end
 
 -- Cached server data (client-side)
 OmniHub.lastGoods = {}
@@ -1610,6 +1645,8 @@ function OmniHub.initUI()
     goodsUI = OmniHubGoodsTable.new(goodsTab, size, {
         nameHeader   = "Name"%_t,
         nameTip      = "A good your installed modules produce and/or consume."%_t,
+        stockHeader  = "Stock"%_t,
+        stockTip     = "Current amount in the station's cargo bay (server value). Refreshes every 30 seconds while this tab is visible. \"-\" = none in stock."%_t,
         prateHeader  = "PRate"%_t,
         prateTip     = "Production rate, units per minute: actual (measured over the last ~60s) / max (theoretical at full utilisation; doubles while a module runs boosted on a stocked optional ingredient). \"-\" = not produced here.\n\nGreen = at capacity, amber = below, orange = idle/starved."%_t,
         crateHeader  = "CRate"%_t,
@@ -1629,6 +1666,8 @@ function OmniHub.initUI()
         sellCallback = "onGoodsSellChanged", buyCallback = "onGoodsBuyChanged",
         prevCallback = "onGoodsPrevPage",    nextCallback = "onGoodsNextPage",
     })
+    -- Live stock/rates refresh: immediate on select, then every GOODS_TICK_INTERVAL via updateClient.
+    goodsTab.onSelectedFunction = "onGoodsTabSelected"
 
     -- 5: Statistics.
     statsTab = tabbedWindow:createTab("Statistics"%_t, "data/textures/icons/chart.png", "Profit and recent trades"%_t)
@@ -1781,17 +1820,21 @@ function OmniHub.updateClient(timeStep)
     if OmniHub.windowOpen and configUI and configUI:pollStockCommit() then
         OmniHub.onConfigChanged()
     end
+    -- Goods-tab live tick: only while the tab is actually visible (no data for tabs nobody watches).
+    if OmniHub.windowOpen and goodsTab and goodsTab.isActiveTab then
+        goodsTickTimer = goodsTickTimer + timeStep
+        if goodsTickTimer >= GOODS_TICK_INTERVAL then
+            goodsTickTimer = 0
+            if clientIsOwner() then invokeServerFunction("sendGoodsTick") end
+        end
+    end
 end
 
 function OmniHub.onShowWindow()
     OmniHub.windowOpen = true
+    goodsTickTimer = 0   -- the full sendHubGoods sync below covers the Goods tab right now
 
-    local station = Entity()
-    local player  = Player()
-    local faction = Faction()
-
-    local isOwner  = (player.index == faction.index)
-                  or (player.allianceIndex and player.allianceIndex == faction.index) or false
+    local isOwner = clientIsOwner()
 
     OmniHub.updateTradeTabs()
 
@@ -1835,6 +1878,12 @@ end
 function OmniHub.receiveHubGoods(list)
     OmniHub.lastGoods = list or {}
     if goodsUI then goodsUI:setData(OmniHub.lastGoods) end
+end
+
+-- Periodic Goods-tab tick: minimal {name, stock, prate, crate} rows for goods with anything to
+-- report. patchLive zeroes everything else, so omitted goods render empty/idle.
+function OmniHub.receiveGoodsTick(rows)
+    if goodsUI then goodsUI:patchLive(rows) end
 end
 
 -- Authoritative per-good max-limit caps pushed by the server alongside every goods sync (sendGoods
@@ -1922,6 +1971,15 @@ function OmniHub.onPriceSliderCommit()
     if goodsUI then goodsUI:setPriceFactors(sellF, buyF) end   -- client-side price prediction
     invokeServerFunction("setPriceFactors", buyF, sellF)
     goodsDirty = true
+end
+
+-- Selecting the Goods tab pulls a live stock/rates tick immediately (the last one may be up to
+-- 30s stale) and restarts the periodic countdown. Non-owners never see this tab, but guard anyway
+-- (don't request owner-only data the server would refuse).
+function OmniHub.onGoodsTabSelected()
+    if not clientIsOwner() then return end
+    goodsTickTimer = 0
+    invokeServerFunction("sendGoodsTick")
 end
 
 -- Selecting the Buy or Sell tab pulls fresh data only if something changed since the last sync.
