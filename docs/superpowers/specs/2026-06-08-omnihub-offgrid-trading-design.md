@@ -41,7 +41,8 @@ benchmark harness + save-serialization measurement (S5), the director dev UI /
 `/omnihubdirector` + `allHubsDebug` override (Component 8; `setDebug`/`getStats` exist on the
 director as the seam), and the risk-targeted in-game tests (S2/M3/M1/C3) — currently covered by
 the pure suite + manual verification.
-**Related:** `docs/auto-trade-diagnosis.md` (root-cause analysis of both problems).
+**Related:** the root-cause analysis (`docs/auto-trade-diagnosis.md`) was removed after both
+problems shipped; its conclusions are folded into this spec.
 
 ## Goal
 
