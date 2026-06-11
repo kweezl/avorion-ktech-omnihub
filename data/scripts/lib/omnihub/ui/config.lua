@@ -70,6 +70,10 @@ function OmniHubUIConfig.new(tab, size, opts)
     left:placeElementTop(self.activeSellCheck)
     self.activeSellCheck.tooltip = "If checked, the hub summons traders to buy its goods when stocks get full."%_t
 
+    self.eventsCheck = tab:createCheckBox(Rect(), "Send event notifications"%_t, opts.changeCallback)
+    left:placeElementTop(self.eventsCheck)
+    self.eventsCheck.tooltip = "If checked, the hub messages its owners in chat: a periodic trade summary, failed trades, and warnings when cargo, assembly, or ingredients hold production back."%_t
+
     left:nextRect(12)
 
     self.buyPriceLabel = tab:createLabel(Rect(), "Buy goods at 100%"%_t, 12)
@@ -139,6 +143,7 @@ function OmniHubUIConfig:apply(cfg)
     if not cfg then return end
     self.activeBuyCheck:setCheckedNoCallback(cfg.activelyRequest ~= false)
     self.activeSellCheck:setCheckedNoCallback(cfg.activelySell ~= false)
+    self.eventsCheck:setCheckedNoCallback(cfg.events ~= false)
 
     -- Server-authoritative dev gate, re-evaluated on every config sync. nil (older server build /
     -- missing key) fails closed: the checkbox stays hidden.
@@ -179,6 +184,7 @@ function OmniHubUIConfig:read()
     return {
         activelyRequest = self.activeBuyCheck.checked,
         activelySell    = self.activeSellCheck.checked,
+        events          = self.eventsCheck.checked == true,
         priceFactorBuy  = sliderToFactor(self.buyPriceSlider.value),
         priceFactorSell = sliderToFactor(self.sellPriceSlider.value),
         -- tonumber("") -> nil; the server treats nil as "keep current" (nil-safe clamp).
