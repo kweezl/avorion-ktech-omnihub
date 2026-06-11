@@ -71,4 +71,77 @@ return function(runner)
         OmniHubEvents.recordTrade(s, "sell", "Steel", 0, 100)
         eq(#drain(s, 1000), 0)
     end)
+
+    -- ── trade failures (immediate, next advance) ─────────────────
+    runner:test("tradeFailed queues an immediate warning with the fix", function()
+        local s = OmniHubEvents.new()
+        OmniHubEvents.tradeFailed(s, "cantpay", "Steel", 50)
+        local due = drain(s, 1)
+        eq(#due, 1)
+        eq(due[1].severity, "warning")
+        tru(due[1].text:find("Steel x50", 1, true) ~= nil, due[1].text)
+        tru(due[1].text:find("faction account", 1, true) ~= nil, "actionable fix: " .. due[1].text)
+    end)
+
+    runner:test("tradeFailed: every kind formats; unknown kind is dropped", function()
+        local s = OmniHubEvents.new()
+        OmniHubEvents.tradeFailed(s, "nostock_in",  "Coal", 10)
+        OmniHubEvents.tradeFailed(s, "nostock_out", "Coal", 10)
+        OmniHubEvents.tradeFailed(s, "wave",        "Coal", 10, 3)
+        OmniHubEvents.tradeFailed(s, "bogus",       "Coal", 10)
+        eq(#drain(s, 1), 3, "three known kinds queued, bogus dropped")
+    end)
+
+    -- ── condition latches ────────────────────────────────────────
+    runner:test("checkStorage: edge-triggered with one-time resolve", function()
+        local s = OmniHubEvents.new()
+        OmniHubEvents.checkStorage(s, true)
+        OmniHubEvents.checkStorage(s, true)   -- held: no repeat
+        local due = drain(s, 1)
+        eq(#due, 1, "fired once")
+        eq(due[1].severity, "warning")
+        tru(due[1].text:find("cargo", 1, true) ~= nil, due[1].text)
+
+        OmniHubEvents.checkStorage(s, false)
+        OmniHubEvents.checkStorage(s, false)
+        due = drain(s, 1)
+        eq(#due, 1, "resolved once")
+        eq(due[1].severity, "info")
+        eq(#drain(s, 1), 0, "silent after resolve")
+    end)
+
+    runner:test("checkAssembly: fires below recommended, resolves at/above; 0 recommended never fires", function()
+        local s = OmniHubEvents.new()
+        OmniHubEvents.checkAssembly(s, 100, 0)     -- empty hub
+        eq(#drain(s, 1), 0)
+        OmniHubEvents.checkAssembly(s, 50, 200)
+        local due = drain(s, 1)
+        eq(#due, 1)
+        tru(due[1].text:find("50", 1, true) ~= nil and due[1].text:find("200", 1, true) ~= nil,
+            "carries both numbers: " .. due[1].text)
+        OmniHubEvents.checkAssembly(s, 200, 200)   -- at recommended = ok
+        eq(drain(s, 1)[1].severity, "info")
+    end)
+
+    -- ── latch persistence ────────────────────────────────────────
+    runner:test("secure/restore round-trips latches (no re-fire after load)", function()
+        local s = OmniHubEvents.new()
+        OmniHubEvents.checkStorage(s, true)
+        drain(s, 1)
+        local saved = OmniHubEvents.secure(s)
+
+        local s2 = OmniHubEvents.new()
+        OmniHubEvents.restore(s2, saved)
+        OmniHubEvents.checkStorage(s2, true)
+        eq(#drain(s2, 1), 0, "condition still held across load -> no duplicate event")
+        OmniHubEvents.checkStorage(s2, false)
+        eq(#drain(s2, 1), 1, "resolve still fires after load")
+    end)
+
+    runner:test("restore(nil) keeps fresh defaults", function()
+        local s = OmniHubEvents.new()
+        OmniHubEvents.restore(s, nil)
+        fls(s.latches.storage)
+        fls(s.latches.assembly)
+    end)
 end
