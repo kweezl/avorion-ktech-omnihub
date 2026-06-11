@@ -25,6 +25,7 @@ local DOCUMENTED = {
     {key = "sellingModuleCount",    value = 10},
     {key = "stockMin",              value = 5},
     {key = "stockMax",              value = 20},
+    {key = "foundingCostMillions",  value = 15},
 }
 
 return function(runner)
@@ -34,7 +35,8 @@ return function(runner)
         eq(type(OmniHubConfig.get),      "function", "OmniHubConfig.get is a function")
         eq(type(OmniHubConfig.defaults), "table",    "OmniHubConfig.defaults is a table")
         for _, key in ipairs({"moduleCap", "dropChance", "modulePriceFactor",
-                              "traderRequestCooldown", "sellingModuleCount", "stockMin", "stockMax"}) do
+                              "traderRequestCooldown", "sellingModuleCount", "stockMin", "stockMax",
+                              "foundingCostMillions"}) do
             OmniHubTest.assertNotNil(OmniHubConfig.defaults[key], "defaults has key: " .. key)
         end
     end)

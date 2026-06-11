@@ -15,6 +15,15 @@ local PERCENT_KEYS = { dropChance = true, modulePriceFactor = true }
 -- this verbatim for MCM; the runtime defaults below are derived from it.
 OmniHubConfig.schema = {
     {
+        key         = "foundingCostMillions",
+        type        = "number",
+        title       = "Founding cost",
+        description = "OmniHub founding price, in millions of credits. 0 = free (creative servers).",
+        default     = 15,
+        min         = 0,
+        max         = 500,
+    },
+    {
         key         = "sellingModuleCount",
         type        = "number",
         title       = "Modules for sale",
