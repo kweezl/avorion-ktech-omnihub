@@ -47,7 +47,6 @@ OmniHub = TradingAPI:CreateNamespace()
 -- ────────────────────────────────────────────────────────────────
 -- Constants
 -- ────────────────────────────────────────────────────────────────
-local MIN_CARGO_BAY = 25000
 local MIN_TIME_TO_PRODUCE = 15.0  -- seconds, matches factory.lua
 local PRICE_MIN, PRICE_MAX = 0.8, 1.2  -- ±20% base-price slider range
 
@@ -261,11 +260,6 @@ function OmniHub.initialize()
     end
 
     if onServer() then
-        local bay = CargoBay()
-        if bay and bay.cargoHold < MIN_CARGO_BAY then
-            bay.cargoHold = MIN_CARGO_BAY
-        end
-
         -- Fresh station defaults: trade with others and actively keep goods flowing out of the box.
         -- A loaded station overwrites these from saved tradingData in restore().
         OmniHub.trader.buyFromOthers   = true

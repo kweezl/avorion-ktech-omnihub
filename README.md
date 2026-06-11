@@ -14,7 +14,12 @@ A mod for Avorion that adds a single configurable production station — the **O
 
 ## Founding a Hub
 
-The OmniHub appears in the station founder under *Other Stations* and costs **15,000,000 credits** to found. A freshly founded hub is an empty shell: it produces nothing until modules are installed. Founding guarantees a minimum cargo hold of **25,000** so the station can operate at all; real throughput wants far more.
+The OmniHub appears in the station founder under *Other Stations*. The founding cost is
+configurable (default **15,000,000 credits**, `Founding cost` in the mod config). A freshly
+founded hub is an empty shell: it produces nothing until modules are installed, and its cargo
+hold is whatever its blocks provide — build cargo bays before installing production.
+*(Migration note: hubs founded before this version relied on a forced 25,000 minimum hold that
+is no longer applied; if such a hub stalls after updating, add real cargo blocks.)*
 
 A hub can also be capped: a configurable limit on total installed module units (default: unlimited).
 
