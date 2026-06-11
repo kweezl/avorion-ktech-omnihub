@@ -457,7 +457,7 @@ function OmniHub.tickRecipe(key, count, timeStep)
     local progress = productionProgress[key]
 
     if progress then
-        OmniHubEvents.recordStallState(hubEvents, key, moduleDisplayName(key), false)
+        OmniHubEvents.recordStallState(hubEvents, key, nil, false)
         local advance = timeStep / ttm
         if progress.boosted then advance = advance * 2 end
         -- Smooth rate accrual: record exactly the progress made this tick (clamped at the cycle end
