@@ -276,10 +276,11 @@ function OmniHub.initialize()
         entity:registerCallback("onTradingManagerBuyFromPlayer", "onDockedTradeBought")
         entity:registerCallback("onTradingManagerSellToPlayer", "onDockedTradeSold")
 
-        -- Attach the dev-only "OmniHub Tests" interaction script. Done here (not only via the station
-        -- founder) so OmniHubs founded before it existed pick it up on reload. addScriptOnce avoids
-        -- double-attach for newly founded stations that already got it from the founder list. The
-        -- option only appears in dev mode (gated in omnihubtests.lua:interactionPossible).
+        -- Attach the dev-only "OmniHub Tests" interaction script (option shown in dev mode only,
+        -- gated in omnihubtests.lua:interactionPossible). The controller is the ONLY attach point:
+        -- do NOT also list it in the stationfounder template — this initialize (and its
+        -- addScriptOnce) runs inside the founder's addScript loop BEFORE the founder reaches the
+        -- tests entry, so addScriptOnce can't dedupe against it and the script attaches twice.
         entity:addScriptOnce("data/scripts/entity/merchants/omnihubtests.lua")
 
         -- Ensure the sector's ambient trader spawner is running (vanilla factories do the same in
