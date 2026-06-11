@@ -213,4 +213,40 @@ return function(runner)
         OmniHubEvents.retainStalls(s, {})                                  -- module uninstalled
         eq(#drain(s, 1000), 0, "no resume for removed module")
     end)
+
+    runner:test("nil product never crashes stall tracking", function()
+        local s = OmniHubEvents.new()
+        stallFor(s, "k1", nil, "ingredient", "Coal", 610, 10)        -- reported with nil product
+        OmniHubEvents.recordStallState(s, "k1", nil, false)          -- recovery must not error
+        local due = drain(s, 300)
+        -- a nil product can't be named; the resume line is simply absent
+        eq(#due, 0)
+    end)
+
+    runner:test("advance(0) still drains queued failures; timers untouched", function()
+        local s = OmniHubEvents.new()
+        OmniHubEvents.tradeFailed(s, "cantpay", "Steel", 5)
+        OmniHubEvents.recordTrade(s, "sell", "Steel", 10, 100)
+        local due = OmniHubEvents.advance(s, 0) or {}
+        eq(#due, 1, "queued failure drained at dt=0")
+        eq(#drain(s, 299), 0, "digest clock did not advance at dt=0")
+        eq(#drain(s, 1), 1, "digest still flushes at 300s of real time")
+    end)
+
+    runner:test("duplicate product names within a reason group are listed once", function()
+        local s = OmniHubEvents.new()
+        -- 59 × 10s = 590s: entries approach threshold but summary not yet due.
+        -- drain(s, 300) pushes stalledFor past 600s AND triggers the stall flush in one call.
+        for t = 1, 59 do
+            OmniHubEvents.recordStallState(s, "kA", "Steel Factory", true, "ingredient", "Coal")
+            OmniHubEvents.recordStallState(s, "kB", "Steel Factory", true, "ingredient", "Coal")
+            drain(s, 10)
+        end
+        local due = drain(s, 300)
+        -- both entries reported; the text names the product once
+        local text = (due[1] or {}).text or ""
+        local first = text:find("Steel Factory", 1, true)
+        tru(first ~= nil, text)
+        nilf(text:find("Steel Factory", first + 1, true), "name not repeated: " .. text)
+    end)
 end

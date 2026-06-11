@@ -141,6 +141,8 @@ end
 -- report-pending; advance() batches all pending keys into ONE summary per STALL_INTERVAL. A
 -- reason change restarts the timer (it is a different problem). Going un-stalled after having
 -- been reported queues the product for a batched "resumed" line on the same cadence.
+-- Call with `stalled = false` on every tick a module is NOT stalled (including while a cycle is
+-- in progress) so recovery is detected promptly; retainStalls covers uninstall, not recovery.
 function OmniHubEvents.recordStallState(s, key, product, stalled, reason, detail)
     local actionable = stalled and (reason == "ingredient" or reason == "space")
     local e = s.stalls[key]
@@ -151,7 +153,7 @@ function OmniHubEvents.recordStallState(s, key, product, stalled, reason, detail
         end
     else
         if e then
-            if e.reported then s.resumed[e.product] = true end
+            if e.reported and e.product ~= nil then s.resumed[e.product] = true end
             s.stalls[key] = nil
         end
     end
@@ -178,12 +180,16 @@ local function buildStallSummary(s)
     table.sort(pending, function(a, b) return a.stalledFor > b.stalledFor end)
 
     local groups, order, extra = {}, {}, 0
+    local seen = {}  -- { [rtext] = { [name] = true } } — dedup names per reason group
     for i, e in ipairs(pending) do
         e.reported = true
         if i <= MAX_LISTED then
             local rtext = STALL_REASON_TEXT[e.reason](e)
-            if not groups[rtext] then groups[rtext] = {}; order[#order + 1] = rtext end
-            table.insert(groups[rtext], e.product)
+            if not groups[rtext] then groups[rtext] = {}; seen[rtext] = {}; order[#order + 1] = rtext end
+            if e.product ~= nil and not seen[rtext][e.product] then
+                seen[rtext][e.product] = true
+                table.insert(groups[rtext], e.product)
+            end
         else
             extra = extra + 1
         end
@@ -215,7 +221,6 @@ end
 -- Rolls all timers forward and returns the payloads now due (nil if none): drained queue entries
 -- first, then a due trade digest, then a due stall/resume summary.
 function OmniHubEvents.advance(s, dt)
-    if not dt or dt <= 0 then return nil end
     local out = nil
     local function push(p)
         if not p then return end
@@ -223,10 +228,13 @@ function OmniHubEvents.advance(s, dt)
         out[#out + 1] = p
     end
 
+    -- Immediate payloads drain regardless of dt — tradeFailed/check* are "next advance", period.
     if #s.queue > 0 then
         for _, p in ipairs(s.queue) do push(p) end
         s.queue = {}
     end
+
+    if not dt or dt <= 0 then return out end
 
     if s.tradeClock ~= nil then
         s.tradeClock = s.tradeClock + dt
