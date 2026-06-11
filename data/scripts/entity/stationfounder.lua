@@ -14,9 +14,12 @@ local OmniHubConfig = include("lib/omnihub/config")
 
 table.insert(StationFounder.stations, {
     name    = "OmniHub"%_t,
-    tooltip = "A modular production station. Install factory modules to produce goods. Modules can be bought from an OmniHub Supplier."%_t,
+    tooltip = "A modular production station. Install factory modules to produce goods. Modules can be bought at any Equipment Dock."%_t,
     scripts = {
         { script = "data/scripts/entity/merchants/omnihubcontroller.lua" },
+        -- The supplier on the hub itself is a dev-mode convenience: its interaction option only
+        -- shows with dev mode on (gated in omnihubsupplier.lua:interactionPossible). Players buy
+        -- modules at equipment docks, which get the same script via our equipmentdock.lua fragment.
         { script = "data/scripts/entity/merchants/omnihubsupplier.lua" },
         -- omnihubtests.lua is deliberately NOT listed here: the controller attaches it in its
         -- initialize, which runs inside the founder's addScript loop — i.e. BEFORE the founder

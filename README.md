@@ -1,11 +1,11 @@
 # KTech OmniHub
 
-A mod for Avorion that adds a single configurable production station — the **OmniHub** — which combines any number of factory production lines into one hub. Instead of founding a separate station for every step of a production chain, you found one OmniHub, buy **factory modules** from an **OmniHub Supplier** station, and install them to compose exactly the production you want. The hub produces, consumes, buys, and sells like a whole industrial district in a single entity.
+A mod for Avorion that adds a single configurable production station — the **OmniHub** — which combines any number of factory production lines into one hub. Instead of founding a separate station for every step of a production chain, you found one OmniHub, buy **factory modules** from the **OmniHub Supplier** shop at any equipment dock, and install them to compose exactly the production you want. The hub produces, consumes, buys, and sells like a whole industrial district in a single entity.
 
 ## Core Features
 
 - **One station, many factories.** Every vanilla (and modded) factory recipe is available as an installable module. Install several copies of a module to multiply its output; mix unrelated recipes freely. Intermediate goods produced by one module feed directly into others from the same cargo hold.
-- **OmniHub Supplier.** A dedicated shop station that stocks a rotating selection of factory modules, including a discounted special offer. Modules are tradeable inventory items of Exotic rarity.
+- **OmniHub Supplier at every equipment dock.** Every equipment dock — including docks already present in an existing save — carries a *Buy OmniHub Modules* shop stocking a rotating selection of factory modules, including a discounted special offer. Modules are tradeable inventory items of Exotic rarity.
 - **Full trading station behavior.** The hub buys ingredients from and sells products to players and NPC traders, with per-good Buy/Sell switches, adjustable price factors, and supply/demand participation.
 - **NPC trade waves.** The hub actively summons mixed-cargo NPC freighters that deliver the ingredients it is short on and haul away its products.
 - **Offline economy.** Hubs in unloaded sectors keep producing and trading against a simulated shadow of their state. Money settles live against the owner's account, and offline trading moves faction relations — nothing is economically inert while you are away.
@@ -118,8 +118,9 @@ When a hub's sector unloads, a galaxy-wide director takes over:
 
 ## Module Economy
 
+- **Where to buy:** every equipment dock carries the *Buy OmniHub Modules* shop. Existing saves are covered automatically — the shop attaches to already-spawned docks the next time their sector loads. (The hub itself also carries the supplier shop, but its interaction option only appears with dev mode on — a testing convenience.)
 - **Module price** = vanilla factory founding cost × configurable factor (default 100 %, range 10–500 %).
-- The Supplier stocks a configurable number of distinct modules at a time (default 10), each with a random stock rolled between a configurable minimum and maximum (defaults 5–20 units).
+- The supplier shop stocks a configurable number of distinct modules at a time (default 10), each with a random stock rolled between a configurable minimum and maximum (defaults 5–20 units).
 - One stocked module is the rotating **special offer** at **30 % off**.
 - Uninstalling a module returns it to inventory.
 - **Destruction drops:** when a hub is destroyed, each installed module unit independently rolls the configured drop chance (default 50 %) to drop as lootable cargo.
@@ -154,7 +155,7 @@ alert sound) — alliance hubs message alliance members:
 | Setting | Default | Range |
 |---|---|---|
 | Founding cost | 15 M cr | 0–500 M cr |
-| Modules for sale at the Supplier | 10 | 1–200 |
+| Modules for sale at the supplier shop | 10 | 1–200 |
 | Stock per module (min / max) | 5 / 20 | 1–9999 |
 | Module price factor | 100 % | 10–500 % |
 | Installed module cap per hub | unlimited | up to 999 |

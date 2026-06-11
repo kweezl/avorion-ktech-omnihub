@@ -35,6 +35,13 @@ local REF_PRICE = {550, 516, 630}
 -- Station identity
 -- ────────────────────────────────────────────────────────────────
 function OmniHubSupplier.interactionPossible(playerIndex, option)
+    -- On an OmniHub station itself (the entity also runs the controller) the supplier shop is a
+    -- dev-mode convenience only — quick module access while testing. The player-facing way to buy
+    -- modules is this same script attached to equipment docks (see our equipmentdock.lua fragment).
+    if not GameSettings().devMode
+            and Entity():hasScript("merchants/omnihubcontroller.lua") then
+        return false
+    end
     return CheckFactionInteraction(playerIndex, -10000)
 end
 
