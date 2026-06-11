@@ -11,8 +11,10 @@ Status: approved design, pre-implementation
    blocks, and the first block-plan change recalculates the hold from the real plan, dropping any
    overflow into space.
 3. Add an owner event-notification system: a per-hub checkbox (default on) that sends chat
-   messages to the owning faction for trade results, trade failures, storage shortfall, and
-   insufficient assembly capacity — styled like vanilla factory/tradingmanager messages.
+   messages to the owning faction for trade results, trade failures, storage shortfall,
+   insufficient assembly capacity, and persistent production stalls — styled like vanilla
+   factory/tradingmanager messages, but digesting trades instead of reporting each one as
+   vanilla does.
 4. Show the recommended assembly (production capacity) value in the Statistics tab.
 5. Delete dev-gated `hubLog` lines that the new events make redundant.
 
@@ -21,7 +23,8 @@ Status: approved design, pre-implementation
 - New entry in `OmniHubConfig.schema` (`data/scripts/lib/omnihub/config.lua`):
   - key `foundingCostMillions`, type `number`, title "Founding cost",
     description "OmniHub founding price, in millions of credits.",
-    default **15**, min **1**, max **500**, unit "M cr" (label only; value stays a plain number).
+    default **15**, min **0**, max **500**, unit "M cr" (label only; value stays a plain number).
+    Min 0 supports free founding on creative servers.
   - Not a percent key — no fraction conversion.
 - `data/scripts/entity/stationfounder.lua` includes `lib/omnihub/config` and sets
   `price = OmniHubConfig.get("foundingCostMillions") * 1000000`.
@@ -54,9 +57,11 @@ Engine-independent (same style as `rates.lua`), covered by an off-engine suite. 
 - `OmniHubEvents.new()` → state: pending trade records, digest timer, condition latches.
 - `recordTrade(s, kind, goodName, amount, price, partnerName)` — accumulate a completed docked
   trade (`kind` = "buy" | "sell").
-- `advance(s, dt)` → returns `nil` or one **digest** payload when ≥60 s have passed since the
-  first pending record (flush at most once per 60 s, only when non-empty). Digest aggregates
-  per-good totals and net credits, e.g. *"Sold Steel ×120, bought Coal ×80 — net +45,000 cr"*.
+- `advance(s, dt)` → returns the events due this tick: a **digest** payload when ≥300 s (5 min)
+  have passed since the first pending record (flush at most once per 5 min, only when non-empty),
+  plus any stall events whose threshold elapsed (see `recordStallState`). Digest aggregates
+  per-good totals and net credits, listing at most 4 goods by traded value with a "+N more"
+  suffix, e.g. *"Sold Steel ×120, bought Coal ×80 +3 more — net +45,000 cr"*.
 - `tradeFailed(goodName, amount, reason)` → immediate event payload. Reasons map from the
   existing failure branches: partner cannot pay, stock cap reached, nothing in stock, ship hold
   full, immediate-wave failure code.
@@ -65,6 +70,19 @@ Engine-independent (same style as `rates.lua`), covered by an off-engine suite. 
   while the state holds.
 - `checkAssembly(s, capacity, recommended)` → same latch semantics for
   `capacity < recommended`.
+- `recordStallState(s, moduleKey, productName, stalled, reason, detail)` — fed once per
+  production tick per installed module with the `canStartCycle` outcome. The module accumulates
+  per-key stalled time (via `advance(dt)`); a key whose **actionable** stall persists ≥600 s
+  (10 min) becomes report-pending. Stall reports are **batched into one summary** and
+  cooldown-gated like the trade digest: `advance` returns at most one stall summary per 300 s,
+  aggregating every report-pending key, grouped by reason and capped at 4 entries with "+N
+  more", e.g. *"Production stalled for 10+ minutes: Steel, Aluminium +2 more (missing: Coal);
+  Wire (no cargo space)"* — so 40 modules starving on one ingredient cost one chat line, not 40.
+  Reported keys latch (no repeats while stalled); when previously reported keys produce again,
+  the next flush carries one batched "resumed" line. Actionable reasons are missing ingredients
+  and insufficient cargo space; a stall on max-stock-reached is the buffer working as intended
+  and stays silent. Brief stalls between trade waves never reach the threshold, so they stay
+  silent too.
 
 Payloads are plain tables `{ text, severity }` (severity: info | warning); the module never
 touches `Entity()`/`Faction()`/chat. Timestamps come from `advance(dt)` accumulation, not
@@ -94,17 +112,25 @@ wall-clock.
   - `rebuild()`, `onBlockPlanChanged`, config-change RPC → recompute storage `over`
     (`totalLimitVol > capacity` — depends only on limits and capacity, so these are the only
     change points) and recommended capacity → `checkStorage` / `checkAssembly` → emit.
-  - Digest flush driven from the existing server update tick via `advance(timeStep)`.
+  - The production tick feeds each installed module's `canStartCycle` outcome to
+    `recordStallState` (the tick already computes it; no extra work).
+  - Digest flush and stall thresholds driven from the existing server update tick via
+    `advance(timeStep)`.
 - **Offline (director) simulation emits no events.** Online sectors only; existing stats still
   capture offline trades.
 
 ### 3.3 Spam control (decided)
 
-- Successful trades: periodic **digest** (≤1 chat line per 60 s per hub — covers a whole trade
-  wave in practice, since wave completion itself is not reliably detectable), never
+- Successful trades: periodic **digest** (≤1 chat line per 5 min per hub, ≤4 goods listed —
+  covers multiple trade waves, since wave completion itself is not reliably detectable), never
   per-transaction.
-- Failures: individual and immediate (they are rare and actionable).
+- Failures: individual and immediate.
 - Conditions (storage, assembly): edge-triggered with a one-time "resolved" message.
+- Production stalls: 10-minute persistence threshold, actionable reasons only, **batched into
+  one summary line** (≤1 per 5 min per hub, grouped by reason, ≤4 entries + "+N more"), with a
+  one-time batched "resumed" message.
+- Message texts state the fix, not just the fault, where one exists (e.g. "deposit credits into
+  the faction account", "add cargo space", "add assembly blocks").
 
 ## 4. Assembly recommendation
 
@@ -114,8 +140,10 @@ wall-clock.
   capacity above which `timeToProduce` bottoms out at `MIN_TIME_TO_PRODUCE` (15 s) and cycles
   cannot get faster. Empty hub → 0.
 - Statistics tab (`ui/statistics.lua`): new line near the storage summary —
-  "Production capacity: X (recommended: Y)", red when `X < Y`. The two numbers ride the existing
-  statistics payload (no new RPC).
+  "Production capacity: X / Y recommended (Z%)", red when `X < Y`, with a tooltip explaining
+  that assembly blocks raise production capacity and that capacity beyond the recommended value
+  does not speed up cycles further. The two numbers ride the existing statistics payload (no new
+  RPC).
 - The same comparison feeds `checkAssembly` (section 3.2).
 
 ## 5. Log cleanup
@@ -131,8 +159,11 @@ Other `hubLog` lines (rebuild, sync, director) stay — events do not cover them
 ## Testing
 
 - New pure suite `data/scripts/lib/omnihub/tests/suites/events_spec.lua`, tagged `pure`,
-  registered in `registry.lua`: digest accumulation/flush timing, per-good aggregation and net
-  credits, latch edge semantics (no repeat while held, resolved fires exactly once, re-arm),
+  registered in `registry.lua`: digest accumulation/flush timing, per-good aggregation, the
+  4-good cap and net credits, latch edge semantics (no repeat while held, resolved fires exactly
+  once, re-arm), stall threshold accumulation (below/at/above 600 s, reason changes reset, silent
+  for max-stock stalls), stall batching (many keys crossing at once → one summary, grouping by
+  reason, cap + "+N more", cooldown between summaries, batched "resumed" exactly once),
   `tradeFailed` formatting.
 - `production_spec.lua`: `recommendedCapacity` cases (single module, max across modules,
   level bonus, empty hub → 0).
@@ -145,3 +176,5 @@ Other `hubLog` lines (rebuild, sync, director) stay — events do not cover them
 - Per-event-type toggles (master checkbox only, for now).
 - Events from the offline director simulation (including wake summaries).
 - Any new lazy-reload triggers or per-tick syncs (per CLAUDE.md networking rules).
+- Repeat-failure cooldowns, excluding the owner's own UI trades from the digest, and debouncing
+  condition checks during block-plan editing — considered and deliberately not included.
