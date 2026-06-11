@@ -9,7 +9,7 @@ pure wave logic in `tradingdecision.lua` (`planWave`/`waveSize`/`waveGate`/`shou
 `maxTradersPerWave` config (default 3). **Offline coupling pending** (Phase 2/3 of the offline
 spec). In-game confirmation of the wave pending.
 **Related:** `2026-06-08-omnihub-offgrid-trading-design.md` (the offline-trading spec this must stay
-consistent with — see "Balance & offline-fidelity coupling" below), `docs/auto-trade-diagnosis.md`.
+consistent with — see "Balance & offline-fidelity coupling" below).
 
 ## Goal
 
