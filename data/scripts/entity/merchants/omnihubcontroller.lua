@@ -1087,6 +1087,9 @@ end
 function OmniHub.setGoodSell(name, enabled)
     if not onServer() then return end
     if not callerIsOwner() then return end
+    -- Store marks under the good's REAL name: a vanilla alias key (goods["Aluminium"]) would put the
+    -- cap under a key no TradingGood.name lookup ever hits, rendering 0/0 and blocking NPC trades.
+    name = OmniHubTrading.canonicalName(name, goods)
     OmniHubTrading.setMark(sellEnabled, name, enabled)  -- explicit true/false
     OmniHub.rebuild()
     -- Push the refreshed caps/amounts immediately: a freshly marked good is already visible in
@@ -1098,6 +1101,7 @@ callable(OmniHub, "setGoodSell")
 function OmniHub.setGoodBuy(name, enabled)
     if not onServer() then return end
     if not callerIsOwner() then return end
+    name = OmniHubTrading.canonicalName(name, goods)  -- see setGoodSell
     OmniHubTrading.setMark(buyEnabled, name, enabled)
     OmniHub.rebuild()
     OmniHub.sendStockSyncTo(Player(callingPlayer))
@@ -1359,9 +1363,13 @@ function OmniHub.sendHubGoodsTo(player)
     -- OPTIMIZE LATER (docs/performance-notes.md): regionalInfo (economyupdater) once PER GOOD (~200)
     -- per window open. Acceptable as a once-per-open cost for now; cache if it hitches.
     local list = {}
-    for name in pairs(goods) do
-        local row = OmniHub.buildGoodRow(name, maxR, sellF, buyF)
-        if row then list[#list + 1] = row end
+    for name, g in pairs(goods) do
+        -- Skip vanilla backwards-compatibility alias keys (goods["Aluminium"] = goods["Aluminum"]):
+        -- they'd render duplicate rows whose marks land under a key no TradingGood.name lookup uses.
+        if type(g) == "table" and g.name == name then
+            local row = OmniHub.buildGoodRow(name, maxR, sellF, buyF)
+            if row then list[#list + 1] = row end
+        end
     end
     table.sort(list, function(a, b) return a.name < b.name end)
 
