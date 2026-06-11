@@ -11,8 +11,15 @@ local nilq = OmniHubTest.assertNil
 
 ---@diagnostic disable: undefined-global
 
-local function firstCatalogKey()
-    for key in pairs(OmniHubModuleDefs.getCatalog()) do return key end
+-- Deterministically picks a module whose recipe NEEDS an ingredient — the wave test marks that
+-- ingredient to Buy. pairs() order over the catalog is undefined, and many productions have no
+-- ingredients (collectors, solar plants), so grabbing an arbitrary first key made this suite flip
+-- with the VM's hash order.
+local function firstKeyWithIngredient()
+    for _, entry in ipairs(OmniHubModuleDefs.getSortedList()) do
+        local r = OmniHubModuleDefs.resolveRecipe(entry.key)
+        if r and r.ingredients and r.ingredients[1] then return entry.key end
+    end
 end
 local function recipeOf(key) return OmniHubModuleDefs.resolveRecipe(key) end
 
@@ -59,7 +66,8 @@ return function(runner)
         local Fleet, Decision = seams.fleet, seams.decision
 
         local snapshot = OmniHub.secure()
-        local key  = firstCatalogKey()
+        local key  = firstKeyWithIngredient()
+        notn(key, "catalog has a module with an ingredient-bearing recipe")
         local prod = recipeOf(key)
         notn(prod, "module resolves to a recipe")
         local ingName = prod.ingredients[1] and prod.ingredients[1].name
