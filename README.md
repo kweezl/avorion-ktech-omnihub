@@ -14,7 +14,12 @@ A mod for Avorion that adds a single configurable production station — the **O
 
 ## Founding a Hub
 
-The OmniHub appears in the station founder under *Other Stations* and costs **15,000,000 credits** to found. A freshly founded hub is an empty shell: it produces nothing until modules are installed. Founding guarantees a minimum cargo hold of **25,000** so the station can operate at all; real throughput wants far more.
+The OmniHub appears in the station founder under *Other Stations*. The founding cost is
+configurable (default **15,000,000 credits**, `Founding cost` in the mod config). A freshly
+founded hub is an empty shell: it produces nothing until modules are installed, and its cargo
+hold is whatever its blocks provide — build cargo bays before installing production.
+*(Migration note: hubs founded before this version relied on a forced 25,000 minimum hold that
+is no longer applied; if such a hub stalls after updating, add real cargo blocks.)*
 
 A hub can also be capped: a configurable limit on total installed module units (default: unlimited).
 
@@ -126,10 +131,29 @@ When a hub's sector unloads, a galaxy-wide director takes over:
   - *Actual* is measured over a trailing ~60-second window, accrued smoothly across the cycle so the reading never aliases above the ceiling.
   - *Max* is the theoretical full-utilisation rate: `60 / cycle time × amount per cycle × installed count`, doubled while the module runs boosted.
 
+## Owner notifications
+
+When **Send event notifications** is enabled in the hub's Config tab (default on), the hub
+messages its owning faction in the chat's **Economy** tab (like vanilla trade notifications — no
+alert sound) — alliance hubs message alliance members:
+
+- **Trade summary** — at most one line per 5 minutes: goods sold/bought (top 4 by value) and the
+  net credits.
+- **Failed trades** — immediately, with the reason and the fix (e.g. deposit credits into the
+  faction account).
+- **Storage warning** — once, when the cargo bay becomes too small to hold every good's max
+  stock; a confirmation when resolved.
+- **Assembly warning** — once, when production capacity drops below the recommended value shown
+  in the Statistics tab; a confirmation when resolved.
+- **Production stalls** — one batched summary when modules have been stalled for 10+ minutes on
+  missing ingredients or cargo space (full output buffers are normal and stay silent), and a
+  batched notice when they resume.
+
 ## Configuration Defaults
 
 | Setting | Default | Range |
 |---|---|---|
+| Founding cost | 15 M cr | 0–500 M cr |
 | Modules for sale at the Supplier | 10 | 1–200 |
 | Stock per module (min / max) | 5 / 20 | 1–9999 |
 | Module price factor | 100 % | 10–500 % |

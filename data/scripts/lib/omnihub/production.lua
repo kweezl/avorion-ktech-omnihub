@@ -28,15 +28,10 @@ local function lerp(factor, lowerBound, upperBound, lowerValue, upperValue, allo
     return lowerValue + (upperValue - lowerValue) * value
 end
 
--- Seconds to complete one production cycle for a recipe.
--- Mirrors OmniHub.computeTimeToProduce; reads good prices/levels from the supplied goodsTable.
-function OmniHubProduction.timeToProduce(recipe, goodsTable, capacity, minTime)
-    if not recipe then return minTime end
-
-    local totalValue = 0
-    local totalLevel = 0
-    local samples    = 0
-
+-- Shared by timeToProduce and recommendedCapacity: a recipe's total output value (results +
+-- garbages, priced from goodsTable) and the level bonus derived from the same goods.
+local function recipeValueAndBonus(recipe, goodsTable)
+    local totalValue, totalLevel, samples = 0, 0, 0
     local function accumulate(name, amount)
         local g = goodsTable[name]
         if g then
@@ -45,20 +40,39 @@ function OmniHubProduction.timeToProduce(recipe, goodsTable, capacity, minTime)
             samples    = samples + 1
         end
     end
-
-    for _, res in pairs(recipe.results) do
-        accumulate(res.name, res.amount)
-    end
+    for _, res in pairs(recipe.results) do accumulate(res.name, res.amount) end
     if recipe.garbages then
-        for _, gar in pairs(recipe.garbages) do
-            accumulate(gar.name, gar.amount)
+        for _, gar in pairs(recipe.garbages) do accumulate(gar.name, gar.amount) end
+    end
+    local avgLevel = samples > 0 and (totalLevel / samples) or 0
+    return totalValue, 1 + avgLevel / 100
+end
+
+-- Seconds to complete one production cycle for a recipe.
+-- Mirrors OmniHub.computeTimeToProduce; reads good prices/levels from the supplied goodsTable.
+function OmniHubProduction.timeToProduce(recipe, goodsTable, capacity, minTime)
+    if not recipe then return minTime end
+    local totalValue, levelBonus = recipeValueAndBonus(recipe, goodsTable)
+    local cap = math.max(1, capacity or 1)
+    return math.max(minTime, totalValue / cap / levelBonus)
+end
+
+-- The production capacity above which timeToProduce bottoms out at minTime for EVERY installed
+-- module — i.e. the smallest capacity that achieves max production speed. Per module that point
+-- is totalValue / (minTime * levelBonus); the hub-wide recommendation is the max across modules
+-- (each module ticks its own cycle, so capacity is not shared). Module count is irrelevant
+-- (count scales amounts per cycle, not cycle time). Empty hub (or no resolvable recipe) -> 0.
+function OmniHubProduction.recommendedCapacity(installed, resolveRecipe, goodsTable, minTime)
+    local best = 0
+    for key in pairs(installed) do
+        local recipe = resolveRecipe(key)
+        if recipe then
+            local totalValue, levelBonus = recipeValueAndBonus(recipe, goodsTable)
+            local needed = totalValue / (minTime * levelBonus)
+            if needed > best then best = needed end
         end
     end
-
-    local avgLevel   = samples > 0 and (totalLevel / samples) or 0
-    local levelBonus = 1 + avgLevel / 100
-    local cap        = math.max(1, capacity or 1)
-    return math.max(minTime, totalValue / cap / levelBonus)
+    return best
 end
 
 -- Probability that the next trader request spawns a seller (vs a buyer).

@@ -87,6 +87,13 @@ function OmniHubModuleDefs.get(key)
     return OmniHubModuleDefs.getCatalog()[key]
 end
 
+-- Display name for a module key ("Steel Factory"), the key itself as fallback. The single
+-- key->label helper for stall messages, debug dumps and any other key-shaped caller.
+function OmniHubModuleDefs.displayName(key)
+    local def = OmniHubModuleDefs.get(key)
+    return (def and def.name) or tostring(key)
+end
+
 -- Returns the raw production table for a key (from productionsByGood).
 function OmniHubModuleDefs.resolveRecipe(key)
     local def = OmniHubModuleDefs.get(key)

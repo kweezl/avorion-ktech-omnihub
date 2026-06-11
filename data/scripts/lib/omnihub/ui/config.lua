@@ -58,6 +58,11 @@ end
 function OmniHubUIConfig.new(tab, size, opts)
     local self = setmetatable({}, OmniHubUIConfig)
     self.opts            = opts
+    -- Until the first server payload lands (apply), every widget still shows its constructor
+    -- default — checkboxes UNCHECKED. A read() pushed before then would silently persist those
+    -- defaults (e.g. turn off event notifications the player never touched), so the controller's
+    -- change handler drops pushes while synced is false.
+    self.synced          = false
 
     local pad  = 10
     local left = UIVerticalLister(Rect(vec2(pad, pad), vec2(size.x - pad, size.y - 60)), 8, 0)
@@ -69,6 +74,10 @@ function OmniHubUIConfig.new(tab, size, opts)
     self.activeSellCheck = tab:createCheckBox(Rect(), "Actively sell goods"%_t, opts.changeCallback)
     left:placeElementTop(self.activeSellCheck)
     self.activeSellCheck.tooltip = "If checked, the hub summons traders to buy its goods when stocks get full."%_t
+
+    self.eventsCheck = tab:createCheckBox(Rect(), "Send event notifications"%_t, opts.changeCallback)
+    left:placeElementTop(self.eventsCheck)
+    self.eventsCheck.tooltip = "If checked, the hub messages its owners in chat: a periodic trade summary, failed trades, and warnings when cargo, assembly, or ingredients hold production back."%_t
 
     left:nextRect(12)
 
@@ -134,11 +143,13 @@ function OmniHubUIConfig.new(tab, size, opts)
     return self
 end
 
--- Applies a server config table to the widgets (no callbacks fire).
+-- Applies a server config table to the widgets (no callbacks fire) and marks the tab synced.
 function OmniHubUIConfig:apply(cfg)
     if not cfg then return end
+    self.synced = true
     self.activeBuyCheck:setCheckedNoCallback(cfg.activelyRequest ~= false)
     self.activeSellCheck:setCheckedNoCallback(cfg.activelySell ~= false)
+    self.eventsCheck:setCheckedNoCallback(cfg.events ~= false)
 
     -- Server-authoritative dev gate, re-evaluated on every config sync. nil (older server build /
     -- missing key) fails closed: the checkbox stays hidden.
@@ -179,6 +190,7 @@ function OmniHubUIConfig:read()
     return {
         activelyRequest = self.activeBuyCheck.checked,
         activelySell    = self.activeSellCheck.checked,
+        events          = self.eventsCheck.checked == true,
         priceFactorBuy  = sliderToFactor(self.buyPriceSlider.value),
         priceFactorSell = sliderToFactor(self.sellPriceSlider.value),
         -- tonumber("") -> nil; the server treats nil as "keep current" (nil-safe clamp).

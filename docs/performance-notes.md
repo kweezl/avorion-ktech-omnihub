@@ -110,3 +110,16 @@ The trading-station Goods tab is implemented and lists **every** good. Confirmed
     to cache.
 - `data/scripts/lib/tradingmanager.lua` *(vanilla, reference only — do not edit)* — `receiveGoods` /
   `sendGoods` are the monolithic path we work around.
+
+## 9. Owner events — accepted micro-costs (deliberate, revisit only if felt)
+
+- `collectStorage()` is an **O(goods) engine scan** and runs on **every `onBlockPlanChanged`**
+  (plus rebuild/config change) to edge-check the storage latch. Debouncing build-mode edits was
+  considered and **deliberately rejected** during design review; revisit only if station editing
+  ever feels heavy on large hubs.
+- `OmniHubEvents.advance()` runs every server tick: O(tracked stalls) iteration, no allocations
+  on the idle path (the immediate queue table is handed out as the result, closure-free).
+  Scales with installed-module count × hub count; bounded by the module catalog.
+- Trade-failure events have **no repeat cooldown** (deliberate design decision — see the events
+  design doc "Out of scope"): a persistent fault (e.g. empty faction account) re-reports every
+  trade wave (~90 s). The wave/docking paths emit at most ONE failure event per transaction.

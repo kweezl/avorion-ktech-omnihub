@@ -8,12 +8,25 @@ package.path = package.path .. ";data/scripts/lib/?.lua"
 -- get() and the derived `defaults` table convert them to the fractions callers expect.
 OmniHubConfig = {}
 
+-- Unit conversion for foundingCostMillions: the schema declares the option in millions of
+-- credits (a 15,000,000 text box is unusable); callers that need credits multiply by this.
+OmniHubConfig.CREDITS_PER_MILLION = 1000000
+
 -- Keys MCM stores as integer percents; converted to fractions on read.
 local PERCENT_KEYS = { dropChance = true, modulePriceFactor = true }
 
 -- THE schema. The only place options/defaults/ranges/labels are declared. modconfig.lua returns
 -- this verbatim for MCM; the runtime defaults below are derived from it.
 OmniHubConfig.schema = {
+    {
+        key         = "foundingCostMillions",
+        type        = "number",
+        title       = "Founding cost",
+        description = "OmniHub founding price, in millions of credits. 0 = free (creative servers).",
+        default     = 15,
+        min         = 0,
+        max         = 500,
+    },
     {
         key         = "sellingModuleCount",
         type        = "number",
@@ -130,6 +143,12 @@ local config  = (ok and mcm) and mcm.bind("ktech-omnihub") or nil
 function OmniHubConfig.get(key)
     if config then
         local raw = config.get(key)  -- MCM returns the schema default when unset, nil if unknown
+        if raw == nil then
+            -- A stale MCM registration (e.g. schema cached from an older mod version) doesn't
+            -- know the key. Callers do arithmetic/comparisons on the result, so nil must never
+            -- escape — fall back to the built-in default.
+            return OmniHubConfig.defaults[key]
+        end
         if PERCENT_KEYS[key] and type(raw) == "number" then
             raw = raw / 100
         end
