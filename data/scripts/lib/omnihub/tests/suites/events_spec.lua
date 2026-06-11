@@ -144,4 +144,73 @@ return function(runner)
         fls(s.latches.storage)
         fls(s.latches.assembly)
     end)
+
+    -- ── production stalls ────────────────────────────────────────
+    -- helper: tick `n` seconds in `step`-sized slices, re-feeding the same stall state each tick
+    -- (mirrors the controller, which feeds tickRecipe's outcome every production tick).
+    local function stallFor(s, key, product, reason, detail, n, step)
+        local due = {}
+        for _ = 1, math.floor(n / step) do
+            OmniHubEvents.recordStallState(s, key, product, true, reason, detail)
+            for _, p in ipairs(drain(s, step)) do due[#due + 1] = p end
+        end
+        return due
+    end
+
+    runner:test("stall below 600s stays silent; crossing it reports once, batched", function()
+        local s = OmniHubEvents.new()
+        eq(#stallFor(s, "k1", "Steel Factory", "ingredient", "Coal", 599, 1), 0, "silent below threshold")
+        local due = stallFor(s, "k1", "Steel Factory", "ingredient", "Coal", 2, 1)
+        eq(#due, 1, "reported once past threshold")
+        eq(due[1].severity, "warning")
+        tru(due[1].text:find("Steel Factory", 1, true) ~= nil, due[1].text)
+        tru(due[1].text:find("missing: Coal", 1, true) ~= nil, due[1].text)
+        eq(#stallFor(s, "k1", "Steel Factory", "ingredient", "Coal", 900, 10), 0, "no repeat while stalled")
+    end)
+
+    runner:test("40 modules stalling together produce ONE summary with +N more", function()
+        local s = OmniHubEvents.new()
+        local due = {}
+        for t = 1, 610 do
+            for i = 1, 40 do
+                OmniHubEvents.recordStallState(s, "k" .. i, "Factory " .. i, true, "ingredient", "Coal")
+            end
+            for _, p in ipairs(drain(s, 1)) do due[#due + 1] = p end
+        end
+        eq(#due, 1, "one chat line, not 40")
+        tru(due[1].text:find("+36 more", 1, true) ~= nil, "4 listed, 36 overflow: " .. due[1].text)
+    end)
+
+    runner:test("max-stock stalls are the buffer working — never reported", function()
+        local s = OmniHubEvents.new()
+        eq(#stallFor(s, "k1", "Steel Factory", "maxstock", "Steel", 1200, 10), 0)
+    end)
+
+    runner:test("reason change resets the stall timer", function()
+        local s = OmniHubEvents.new()
+        stallFor(s, "k1", "Steel Factory", "ingredient", "Coal", 590, 10)
+        eq(#stallFor(s, "k1", "Steel Factory", "space", nil, 590, 10), 0,
+            "timer restarted on reason change — still silent")
+        tru(#stallFor(s, "k1", "Steel Factory", "space", nil, 20, 10) >= 1, "new reason reports after its own 600s")
+    end)
+
+    runner:test("resume after a report emits one batched info line; unreported stalls resume silently", function()
+        local s = OmniHubEvents.new()
+        stallFor(s, "k1", "Steel Factory", "ingredient", "Coal", 610, 10)  -- reported
+        OmniHubEvents.recordStallState(s, "k1", "Steel Factory", false)
+        OmniHubEvents.recordStallState(s, "k2", "Wire Factory", false)     -- never stalled/reported
+        -- resume summaries share the stall cooldown; roll past it
+        local due = drain(s, 300)
+        eq(#due, 1, "one resume line")
+        eq(due[1].severity, "info")
+        tru(due[1].text:find("Steel Factory", 1, true) ~= nil, due[1].text)
+        nilf(due[1].text:find("Wire Factory", 1, true), "unreported module not mentioned")
+    end)
+
+    runner:test("retainStalls drops uninstalled modules without a resume message", function()
+        local s = OmniHubEvents.new()
+        stallFor(s, "k1", "Steel Factory", "ingredient", "Coal", 610, 10)  -- reported
+        OmniHubEvents.retainStalls(s, {})                                  -- module uninstalled
+        eq(#drain(s, 1000), 0, "no resume for removed module")
+    end)
 end
