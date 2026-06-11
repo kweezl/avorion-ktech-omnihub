@@ -54,4 +54,15 @@ function OmniHubTrading.setMark(map, name, enabled)
     return map
 end
 
+-- Resolves a goods-catalog KEY to the good's real (TradingGood) name. Vanilla goods.lua defines
+-- backwards-compatibility alias keys whose key differs from the good's name (goods["Aluminium"] =
+-- goods["Aluminum"], goods["Silicium"] = goods["Silicon"]). Marks — and everything derived from
+-- them (trade lists, max-limit caps) — must be keyed by the real name, because every runtime
+-- lookup (trader.getMaxStock, stock sync, UI rows) goes through TradingGood.name. A name not in
+-- the catalog (or a nil catalog) passes through unchanged.
+function OmniHubTrading.canonicalName(name, catalog)
+    local g = catalog and catalog[name]
+    return (type(g) == "table" and g.name) or name
+end
+
 return OmniHubTrading

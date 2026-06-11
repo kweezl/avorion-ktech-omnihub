@@ -276,10 +276,11 @@ function OmniHub.initialize()
         entity:registerCallback("onTradingManagerBuyFromPlayer", "onDockedTradeBought")
         entity:registerCallback("onTradingManagerSellToPlayer", "onDockedTradeSold")
 
-        -- Attach the dev-only "OmniHub Tests" interaction script. Done here (not only via the station
-        -- founder) so OmniHubs founded before it existed pick it up on reload. addScriptOnce avoids
-        -- double-attach for newly founded stations that already got it from the founder list. The
-        -- option only appears in dev mode (gated in omnihubtests.lua:interactionPossible).
+        -- Attach the dev-only "OmniHub Tests" interaction script (option shown in dev mode only,
+        -- gated in omnihubtests.lua:interactionPossible). The controller is the ONLY attach point:
+        -- do NOT also list it in the stationfounder template — this initialize (and its
+        -- addScriptOnce) runs inside the founder's addScript loop BEFORE the founder reaches the
+        -- tests entry, so addScriptOnce can't dedupe against it and the script attaches twice.
         entity:addScriptOnce("data/scripts/entity/merchants/omnihubtests.lua")
 
         -- Ensure the sector's ambient trader spawner is running (vanilla factories do the same in
@@ -1087,6 +1088,9 @@ end
 function OmniHub.setGoodSell(name, enabled)
     if not onServer() then return end
     if not callerIsOwner() then return end
+    -- Store marks under the good's REAL name: a vanilla alias key (goods["Aluminium"]) would put the
+    -- cap under a key no TradingGood.name lookup ever hits, rendering 0/0 and blocking NPC trades.
+    name = OmniHubTrading.canonicalName(name, goods)
     OmniHubTrading.setMark(sellEnabled, name, enabled)  -- explicit true/false
     OmniHub.rebuild()
     -- Push the refreshed caps/amounts immediately: a freshly marked good is already visible in
@@ -1098,6 +1102,7 @@ callable(OmniHub, "setGoodSell")
 function OmniHub.setGoodBuy(name, enabled)
     if not onServer() then return end
     if not callerIsOwner() then return end
+    name = OmniHubTrading.canonicalName(name, goods)  -- see setGoodSell
     OmniHubTrading.setMark(buyEnabled, name, enabled)
     OmniHub.rebuild()
     OmniHub.sendStockSyncTo(Player(callingPlayer))
@@ -1359,9 +1364,13 @@ function OmniHub.sendHubGoodsTo(player)
     -- OPTIMIZE LATER (docs/performance-notes.md): regionalInfo (economyupdater) once PER GOOD (~200)
     -- per window open. Acceptable as a once-per-open cost for now; cache if it hitches.
     local list = {}
-    for name in pairs(goods) do
-        local row = OmniHub.buildGoodRow(name, maxR, sellF, buyF)
-        if row then list[#list + 1] = row end
+    for name, g in pairs(goods) do
+        -- Skip vanilla backwards-compatibility alias keys (goods["Aluminium"] = goods["Aluminum"]):
+        -- they'd render duplicate rows whose marks land under a key no TradingGood.name lookup uses.
+        if type(g) == "table" and g.name == name then
+            local row = OmniHub.buildGoodRow(name, maxR, sellF, buyF)
+            if row then list[#list + 1] = row end
+        end
     end
     table.sort(list, function(a, b) return a.name < b.name end)
 

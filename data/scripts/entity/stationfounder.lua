@@ -8,8 +8,10 @@ table.insert(StationFounder.stations, {
     scripts = {
         { script = "data/scripts/entity/merchants/omnihubcontroller.lua" },
         { script = "data/scripts/entity/merchants/omnihubsupplier.lua" },
-        -- Dev-mode-only "OmniHub Tests" interaction option (gated in its interactionPossible).
-        { script = "data/scripts/entity/merchants/omnihubtests.lua" },
+        -- omnihubtests.lua is deliberately NOT listed here: the controller attaches it in its
+        -- initialize, which runs inside the founder's addScript loop — i.e. BEFORE the founder
+        -- would reach a tests entry, so listing it here double-attaches it (two interaction
+        -- options). The controller is the single attach point.
     },
     price = 15000000,
 })
