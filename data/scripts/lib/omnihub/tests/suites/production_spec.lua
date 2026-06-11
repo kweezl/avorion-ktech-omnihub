@@ -293,4 +293,45 @@ return function(runner)
     runner:test("rollDrops returns empty for no installed modules", function()
         eq(#OmniHubProduction.rollDrops({}, 1.0, constRng(true)), 0, "empty installed -> no drops")
     end)
+
+    -- ── recommendedCapacity ──────────────────────────────────────
+    -- goodsTable fixture: price/level shapes mirror the timeToProduce tests.
+    local rcGoods = {
+        plate = { price = 300, level = 0 },   -- value 300/unit, no level bonus
+        gem   = { price = 600, level = 50 },  -- value 600/unit, levelBonus 1.5
+        scrap = { price = 30,  level = 0 },
+    }
+
+    runner:test("recommendedCapacity: empty hub -> 0", function()
+        eq(OmniHubProduction.recommendedCapacity({}, function() return nil end, rcGoods, 15), 0)
+    end)
+
+    runner:test("recommendedCapacity: capacity where cycle time bottoms out at minTime", function()
+        -- one module: 2 plate/cycle -> totalValue 600, levelBonus 1 -> 600 / 15 = 40
+        local recipes = { mPlate = { ingredients = {}, results = { {name = "plate", amount = 2} } } }
+        local resolve = function(key) return recipes[key] end
+        near(OmniHubProduction.recommendedCapacity({mPlate = 1}, resolve, rcGoods, 15), 40)
+        -- cross-check: AT the recommended capacity, timeToProduce == minTime exactly
+        near(OmniHubProduction.timeToProduce(recipes.mPlate, rcGoods, 40, 15), 15)
+        -- and BELOW it, the cycle is slower
+        tru(OmniHubProduction.timeToProduce(recipes.mPlate, rcGoods, 39, 15) > 15,
+            "below recommended -> slower than minTime")
+    end)
+
+    runner:test("recommendedCapacity: max across modules; level bonus and garbages count", function()
+        local recipes = {
+            mPlate = { ingredients = {}, results = { {name = "plate", amount = 2} } },          -- needs 40
+            mGem   = { ingredients = {}, results = { {name = "gem",   amount = 3} },            -- value 1800
+                       garbages    = { {name = "scrap", amount = 10} } },                       -- + 300
+        }
+        -- mGem: totalValue 2100, avgLevel (50+0)/2=25, bonus 1.25 -> 2100 / (15*1.25) = 112
+        local resolve = function(key) return recipes[key] end
+        near(OmniHubProduction.recommendedCapacity({mPlate = 1, mGem = 1}, resolve, rcGoods, 15), 112)
+    end)
+
+    runner:test("recommendedCapacity: module count does not change it (parallel lines, same cycle)", function()
+        local recipes = { mPlate = { ingredients = {}, results = { {name = "plate", amount = 2} } } }
+        local resolve = function(key) return recipes[key] end
+        near(OmniHubProduction.recommendedCapacity({mPlate = 5}, resolve, rcGoods, 15), 40)
+    end)
 end
