@@ -96,6 +96,39 @@ return function(runner)
         fls(c.isConsumed, "unknown not consumed")
     end)
 
+    -- ── sellTier / buildSoldPickupList (tiered sell policy) ───────────────────
+    runner:test("sellTier: ingredient -> 3, even when also produced (protect the chain)", function()
+        local agg = makeAgg()
+        eq(OmniHubTrading.sellTier("Iron Ore", agg), 3, "ingredient-only is tier 3")
+        eq(OmniHubTrading.sellTier("Steel", agg), 3, "result AND ingredient: ingredient wins")
+    end)
+
+    runner:test("sellTier: result-only -> 2", function()
+        eq(OmniHubTrading.sellTier("Plate", makeAgg()), 2)
+    end)
+
+    runner:test("sellTier: garbage-only and unknown goods -> 1 (dump ASAP)", function()
+        local agg = makeAgg()
+        eq(OmniHubTrading.sellTier("Scrap", agg), 1, "garbage is neither result nor ingredient")
+        eq(OmniHubTrading.sellTier("Titanium", agg), 1, "pure trading-station good")
+    end)
+
+    runner:test("buildSoldPickupList maps every sold name to {name, tier}, preserving order", function()
+        local list = OmniHubTrading.buildSoldPickupList(
+            { "Iron Ore", "Plate", "Scrap", "Steel", "Titanium" }, makeAgg())
+        eq(#list, 5)
+        eq(list[1].name, "Iron Ore"); eq(list[1].tier, 3)
+        eq(list[2].name, "Plate");    eq(list[2].tier, 2)
+        eq(list[3].name, "Scrap");    eq(list[3].tier, 1)
+        eq(list[4].name, "Steel");    eq(list[4].tier, 3)
+        eq(list[5].name, "Titanium"); eq(list[5].tier, 1)
+    end)
+
+    runner:test("buildSoldPickupList is empty for empty/nil sold names", function()
+        eq(#OmniHubTrading.buildSoldPickupList({}, makeAgg()), 0)
+        eq(#OmniHubTrading.buildSoldPickupList(nil, makeAgg()), 0)
+    end)
+
     -- ── canonicalName ──────────────────────────────────────────────────────────
     runner:test("canonicalName resolves a catalog alias key to the good's real name", function()
         local catalog = {}

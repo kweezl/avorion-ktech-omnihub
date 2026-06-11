@@ -9,8 +9,8 @@ package.path = package.path .. ";data/scripts/lib/?.lua"
 --   query.getMaxGoods(name) -> the good's external-trade cap; 0 when the good is NOT in the hub's
 --                              bought/sold lists (i.e. not externally tradeable)
 --   query.goodPrice(name)   -> base price (number), or nil/false for an unknown good
--- `rng` exposes :test(probability) like the engine Random. Each function returns a decision table or
--- nil ("do not spawn").
+-- `rng` exposes :random01() -> uniform [0,1) like the engine Random (buyer amounts, the 20%
+-- high-value ship roll). Each decide function returns a decision table or nil ("do not spawn").
 OmniHubTradingDecision = {}
 
 local function round(x) return math.floor(x + 0.5) end
@@ -19,8 +19,8 @@ local function round(x) return math.floor(x + 0.5) end
 -- Fixes the A2 bug: returns nil (NOT a negative amount) when the good isn't externally tradeable
 -- (getMaxGoods == 0). The old inline code computed min(0,500)-have < 0 and still spawned a no-op
 -- trader, burning the request cooldown.
-function OmniHubTradingDecision.decideSeller(good, query, immediate)
-    local have = query.getNumGoods(good.name)
+function OmniHubTradingDecision.decideSeller(good, query, immediate, have)
+    have = have or query.getNumGoods(good.name)  -- optional pre-read so planWave queries once
     if have >= good.amount then return nil end          -- already stocked enough
     local maximum = query.getMaxGoods(good.name)
     if maximum <= 0 then return nil end                  -- not externally tradeable (A2 fix)
@@ -30,29 +30,26 @@ function OmniHubTradingDecision.decideSeller(good, query, immediate)
     return { name = good.name, amount = amount }
 end
 
--- Whether to summon a BUYER to take a product/garbage. Returns {name=} or nil.
--- Returns nil when the good is unknown OR not externally sold (getMaxGoods == 0): a buyer for a good
--- the hub doesn't sell can never complete (sellToShip requires it in soldGoods), so spawning one only
--- burns the cooldown. Otherwise mirrors factory.lua's trySpawnBuyer thresholds.
-function OmniHubTradingDecision.decideBuyer(good, query, rng)
-    local price = query.goodPrice(good.name)
-    if not price then return nil end
-    local maxGoods = query.getMaxGoods(good.name)
-    if maxGoods <= 0 then return nil end                 -- not externally sold (A2 fix)
-    local newAmount = query.getNumGoods(good.name) + good.amount
-    local value     = newAmount * price
-    if newAmount > maxGoods * 0.8 or (value > 100000 and rng:test(0.3)) then
-        return { name = good.name }
-    end
-    return nil
+-- Tiered sell policy (replaces factory.lua-style decideBuyer): fill thresholds a sold good must
+-- reach before NPC buyers are offered it. Tier 1 (neither result nor ingredient) sells at any
+-- positive stock; tier 2 (product) waits for 30% fill; tier 3 (ingredient) is protected until 80%.
+OmniHubTradingDecision.SELL_FILL_PRODUCT    = 0.30
+OmniHubTradingDecision.SELL_FILL_INGREDIENT = 0.80
+
+-- Whether a sold good (classified by OmniHubTrading.sellTier) may be offered to an NPC buyer.
+-- max == 0 means not externally sold (A2 gate); stock == 0 would dock a buyer that leaves empty.
+-- Thresholds are inclusive: "stock >= 30% of max".
+function OmniHubTradingDecision.sellEligible(tier, stock, max)
+    if max <= 0 or stock <= 0 then return false end
+    if tier == 3 then return stock / max >= OmniHubTradingDecision.SELL_FILL_INGREDIENT end
+    if tier == 2 then return stock / max >= OmniHubTradingDecision.SELL_FILL_PRODUCT end
+    return true
 end
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- Wave model (see docs/superpowers/specs/2026-06-10-npc-multi-trader-exploration.md)
 -- One wave = a deterministic batch of mixed-trader manifests; a new wave starts only when no
--- trader is still serving the hub (with a forced-restart backstop against zombie ships). `rng`
--- additionally needs :random01() -> uniform [0,1) for vanilla's buyer amounts and the 20%
--- high-value ship roll.
+-- trader is still serving the hub (with a forced-restart backstop against zombie ships).
 -- ────────────────────────────────────────────────────────────────────────────
 
 -- Wave size: how many traders to spawn = global config cap, further capped by free docks
@@ -109,9 +106,10 @@ function OmniHubTradingDecision.transactionList(manifest)
     return ops
 end
 
--- Plans one wave: runs every ingredient through decideSeller and every result/garbage through
--- decideBuyer (A2 gates hold by construction — non-tradeable goods never enter a manifest), then
--- packs the eligible trades into up to caps.maxShips mixed manifests:
+-- Plans one wave: runs every ingredient through decideSeller and every sold good (agg.sold, the
+-- {name, tier} array from OmniHubTrading.buildSoldPickupList) through sellEligible (A2 gates hold
+-- by construction — non-tradeable goods never enter a manifest), then packs the eligible trades
+-- into up to caps.maxShips mixed manifests:
 --   caps.maxShips    REQUIRED ship budget (waveSize result)
 --   caps.shipValue   per-ship TOTAL value cap (vanilla richness formula; each ship also gets
 --                    vanilla's 20% chance of a 1-5x high-value budget via rng:random01())
@@ -123,6 +121,8 @@ end
 --                    earn money and are never budget-limited. Estimated at price x caps.buyFactor.
 -- Deliveries are packed MOST-STARVED FIRST (lowest have/need ratio), so a tight wave or budget
 -- feeds the production bottleneck instead of whichever ingredient the recipe lists first.
+-- Pickups are packed TIER-ASCENDING (sell non-chain goods before products before ingredients),
+-- fill-descending within a tier (fullest storage first), name as the deterministic tiebreak.
 -- Items that overflow a ship spill into the next; whatever exceeds the wave waits for the next
 -- one. An item whose single unit exceeds a FRESH ship's budget is unshippable and skipped.
 function OmniHubTradingDecision.planWave(agg, query, rng, caps)
@@ -131,38 +131,47 @@ function OmniHubTradingDecision.planWave(agg, query, rng, caps)
 
     local deliveries = {}
     for _, ing in pairs(agg.ingredients or {}) do
-        local d = OmniHubTradingDecision.decideSeller(ing, query, caps.immediate)
+        local have = query.getNumGoods(ing.name)
+        local d = OmniHubTradingDecision.decideSeller(ing, query, caps.immediate, have)
         if d then
             local need = (ing.amount and ing.amount > 0) and ing.amount or 1
             deliveries[#deliveries + 1] = {
                 kind = "deliver", name = d.name, amount = d.amount,
-                scarcity = query.getNumGoods(d.name) / need,
+                scarcity = have / need,
             }
         end
     end
     table.sort(deliveries, function(a, b) return a.scarcity < b.scarcity end)
 
-    local items = {}
-    for _, d in ipairs(deliveries) do items[#items + 1] = d end
-    local function addPickup(good)
-        -- Never plan a pickup for a good with NOTHING in stock: the value gate passes for
-        -- expensive goods even at zero stock, and the buyer would dock and leave empty.
-        if query.getNumGoods(good.name) <= 0 then return end
-        if OmniHubTradingDecision.decideBuyer(good, query, rng) then
-            -- vanilla buyer amount: 100 + random(0..1000); sellToShip clamps to real stock at dock
-            local amount = math.floor(100 + rng:random01() * 1000 + 0.5)
+    -- One pass over the sold goods: a single getNumGoods/getMaxGoods read each, the eligibility
+    -- gate, then ONE composite sort. A good without a catalog price can't be value-packed; skip.
+    local pickups = {}
+    for _, s in ipairs(agg.sold or {}) do
+        local stock = query.getNumGoods(s.name)
+        local max   = query.getMaxGoods(s.name)
+        if query.goodPrice(s.name) and OmniHubTradingDecision.sellEligible(s.tier, stock, max) then
+            -- vanilla buyer amount: 100 + random(0..1000); sellToShip clamps to real stock at dock.
             -- Immediate mode sells INSTANTLY against current stock (no fly-in time for production
             -- to accrue), so clamp to it — an optimistic amount comes back as sellGoods error 1.
-            if caps.immediate then
-                amount = math.min(amount, query.getNumGoods(good.name))
-            end
+            local amount = math.floor(100 + rng:random01() * 1000 + 0.5)
+            if caps.immediate then amount = math.min(amount, stock) end
             if amount > 0 then
-                items[#items + 1] = { kind = "pickup", name = good.name, amount = amount }
+                pickups[#pickups + 1] = {
+                    kind = "pickup", name = s.name, amount = amount,
+                    tier = s.tier, fill = stock / max,
+                }
             end
         end
     end
-    for _, res in pairs(agg.results  or {}) do addPickup(res) end
-    for _, gar in pairs(agg.garbages or {}) do addPickup(gar) end
+    table.sort(pickups, function(a, b)
+        if a.tier ~= b.tier then return a.tier < b.tier end
+        if a.fill ~= b.fill then return a.fill > b.fill end
+        return a.name < b.name
+    end)
+
+    local items = {}
+    for _, d in ipairs(deliveries) do items[#items + 1] = d end
+    for _, p in ipairs(pickups)    do items[#items + 1] = p end
     if #items == 0 then return {} end
 
     local manifests = {}

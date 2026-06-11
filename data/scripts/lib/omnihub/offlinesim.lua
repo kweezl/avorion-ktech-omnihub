@@ -15,6 +15,7 @@ local OmniHubTradingDecision = include("lib/omnihub/tradingdecision")
 --   progress    = { key -> {progress,boosted} },
 --   inventory   = { name -> amount },          freeSpace = number (cargo volume budget),
 --   tradeCaps   = { name -> getMaxGoods },     stockCaps = { name -> getMaxStock },
+--   sold        = { {name, tier}, ... },       -- sell-marked pickup list (buildSoldPickupList)
 --   buyFactor / sellFactor, activelyRequest / activelySell,
 --   flags = { war, noTrade },                  -- last-known sector flags (Case D)
 --   cfg   = { wavePeriod, maxShips, shipValue }, -- snapshotted at heartbeat; wavePeriod =
@@ -116,12 +117,14 @@ local function runWave(shadow, resolveRecipe, catalog, rng, env, query, report)
 
     local agg = OmniHubProduction.aggregate(shadow.installed, resolveRecipe)
     local production = agg.aggregatedProduction
-    if not production then return end
 
     local sides = {
-        ingredients = shadow.activelyRequest and production.ingredients or {},
-        results     = shadow.activelySell    and production.results     or {},
-        garbages    = shadow.activelySell    and production.garbages    or {},
+        ingredients = (shadow.activelyRequest and production) and production.ingredients or {},
+        -- {name, tier} pickup list snapshotted at heartbeat (a pre-update shadow lacks it:
+        -- no offline pickups for that hub until its next heartbeat — harmless, no migration).
+        -- A module-less trading hub has no production but still sells its tier-1 goods
+        -- (parity with the online requestTraders gate).
+        sold        = shadow.activelySell and shadow.sold or {},
     }
 
     local manifests = OmniHubTradingDecision.planWave(sides, query, rng, {

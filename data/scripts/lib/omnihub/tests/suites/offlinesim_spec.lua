@@ -60,6 +60,7 @@ local function shadow(o)
         sellFactor = o.sellFactor or 1.0,
         activelyRequest = (o.activelyRequest ~= false),
         activelySell    = (o.activelySell ~= false),
+        sold       = o.sold or {},
         flags      = o.flags or {},
         cfg        = o.cfg or { wavePeriod = 100000, maxShips = 3, shipValue = 1e12 },
         waveTimer  = 0,
@@ -114,16 +115,32 @@ return function(runner)
     end)
 
     runner:test("offline wave sells stock and credits the owner (apply-time clamp)", function()
-        -- plate 90/100 (>80% gate) sell-marked; deliveries disabled. Planner would ask for 600
-        -- (rng stub); the apply clamps to the 90 actually in stock.
+        -- plate sell-marked, tier 2 at 90/100 fill (>=30% gate); deliveries disabled. Planner
+        -- would ask for 600 (rng stub); the apply clamps to the 90 actually in stock.
         local s = shadow({
             inventory = { plate = 90 }, tradeCaps = { plate = 100 },
+            sold = { { name = "plate", tier = 2 } },
             activelyRequest = false,
             cfg = { wavePeriod = 270, maxShips = 3, shipValue = 1e12 },
         })
         local e = env()
         Sim.simulate(s, 270, resolveRecipe, CATALOG, rng(false), e)
         eq(s.inventory.plate, 0, "sold everything in stock")
+        near(e.received, 90 * 200 * 1.0, nil, "credited at base price x sellFactor")
+    end)
+
+    runner:test("offline wave sells tier-1 goods on a module-less trading hub", function()
+        -- No production modules at all: pickups must still run from the sold list (parity with
+        -- the online requestTraders gate).
+        local s = shadow({
+            installed = {}, ttm = {},
+            inventory = { plate = 90 }, tradeCaps = { plate = 100 },
+            sold = { { name = "plate", tier = 1 } },
+            cfg = { wavePeriod = 270, maxShips = 3, shipValue = 1e12 },
+        })
+        local e = env()
+        Sim.simulate(s, 270, resolveRecipe, CATALOG, rng(false), e)
+        eq(s.inventory.plate, 0, "sold without any installed production")
         near(e.received, 90 * 200 * 1.0, nil, "credited at base price x sellFactor")
     end)
 
@@ -155,6 +172,7 @@ return function(runner)
     runner:test("war / no-trade flags suppress offline waves (Case D)", function()
         local s = shadow({
             inventory = { plate = 90 }, tradeCaps = { plate = 100 },
+            sold = { { name = "plate", tier = 2 } },
             flags = { war = true },
             cfg = { wavePeriod = 270, maxShips = 3, shipValue = 1e12 },
         })
