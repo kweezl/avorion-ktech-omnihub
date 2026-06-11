@@ -5,7 +5,7 @@ local OmniHubSupplierStock = include("supplierstock")  -- tested pageSlice (clam
 
 -- namespace OmniHubGoodsTable
 -- Client-only unified Goods table (merges the old Products + Resources tabs). One row per good with:
--- NAME (icon+name) | PRATE actual/max | CRATE actual/max | SP | BP | MARKET | BUY | SELL.
+-- NAME (icon+name) | STOCK | PRATE actual/max | CRATE actual/max | SP | BP | MARKET | BUY | SELL.
 -- Styled like the vanilla Buy/Sell tables (header y=0, rows at y=30, 35px pitch, 29px icon, font 15),
 -- full-width, vertically-centred cells, fixed reusable row pool, paged. Renders SERVER-computed values
 -- only; the controller wires the checkbox/pager handler names and reads back via :goodForCheckbox().
@@ -57,11 +57,11 @@ local function marketColor(pct)
 end
 
 local function hideRow(r)
-    r.frame:hide(); r.icon:hide(); r.name:hide(); r.prate:hide(); r.crate:hide()
+    r.frame:hide(); r.icon:hide(); r.name:hide(); r.stock:hide(); r.prate:hide(); r.crate:hide()
     r.sp:hide(); r.bp:hide(); r.market:hide(); r.buyCb:hide(); r.sellCb:hide()
 end
 local function showRow(r)
-    r.frame:show(); r.icon:show(); r.name:show(); r.prate:show(); r.crate:show()
+    r.frame:show(); r.icon:show(); r.name:show(); r.stock:show(); r.prate:show(); r.crate:show()
     r.sp:show(); r.bp:show(); r.market:show(); r.buyCb:show(); r.sellCb:show()
 end
 
@@ -94,11 +94,14 @@ function OmniHubGoodsTable.new(tab, size, opts)
     local CRATE_L  = CRATE_R - 82
     local PRATE_R  = CRATE_L - 14
     local PRATE_L  = PRATE_R - 82
-    local NAME_RIGHT = PRATE_L - 12
+    local STOCK_R  = PRATE_L - 14
+    local STOCK_L  = STOCK_R - 70
+    local NAME_RIGHT = STOCK_L - 12
     local ROW_RIGHT  = W - 2
 
     self.cols = {
         ICON_X = ICON_X, NAME_X = NAME_X, NAME_RIGHT = NAME_RIGHT,
+        STOCK_L = STOCK_L, STOCK_R = STOCK_R,
         PRATE_L = PRATE_L, PRATE_R = PRATE_R, CRATE_L = CRATE_L, CRATE_R = CRATE_R,
         SP_L = SP_L, SP_R = SP_R, BP_L = BP_L, BP_R = BP_R,
         MARKET_L = MARKET_L, MARKET_R = MARKET_R, BUY_X = BUY_X, SELL_X = SELL_X, CB_W = CB_W,
@@ -113,6 +116,7 @@ function OmniHubGoodsTable.new(tab, size, opts)
         l:setTopRightAligned()
         l.tooltip = tip
     end
+    rh(STOCK_L,  STOCK_R,  opts.stockHeader,  opts.stockTip)
     rh(PRATE_L,  PRATE_R,  opts.prateHeader,  opts.prateTip)
     rh(CRATE_L,  CRATE_R,  opts.crateHeader,  opts.crateTip)
     rh(SP_L,     SP_R,     opts.spHeader,     opts.spTip)
@@ -141,6 +145,7 @@ function OmniHubGoodsTable.new(tab, size, opts)
             l:setRightAligned()
             return l
         end
+        local stock  = num(STOCK_L, STOCK_R)
         local prate  = num(PRATE_L, PRATE_R)
         local crate  = num(CRATE_L, CRATE_R)
         local sp     = num(SP_L, SP_R)
@@ -153,8 +158,8 @@ function OmniHubGoodsTable.new(tab, size, opts)
         local sellCb = tab:createCheckBox(Rect(vec2(SELL_X, cbTop), vec2(SELL_X + CB_W, cbTop + CB_W)), "", opts.sellCallback)
         sellCb.tooltip = opts.sellTooltip
 
-        local row = { frame = frame, icon = icon, name = name, prate = prate, crate = crate,
-                      sp = sp, bp = bp, market = market, buyCb = buyCb, sellCb = sellCb }
+        local row = { frame = frame, icon = icon, name = name, stock = stock, prate = prate,
+                      crate = crate, sp = sp, bp = bp, market = market, buyCb = buyCb, sellCb = sellCb }
         hideRow(row)
         self.rows[i] = row
     end
@@ -196,6 +201,15 @@ function OmniHubGoodsTable:render()
         if d then
             row.icon.picture = d.icon or ""
             row.name.caption = d.name or "?"
+
+            -- Dim "-" when empty so the goods actually held in cargo pop out while scanning.
+            if (d.stock or 0) > 0 then
+                row.stock.caption = createMonetaryString(d.stock)
+                row.stock.color   = ColorRGB(1.0, 1.0, 1.0)
+            else
+                row.stock.caption = "-"
+                row.stock.color   = ColorRGB(0.55, 0.55, 0.55)
+            end
 
             row.prate.caption = fmtRate(d.prateActual, d.prateMax)
             row.prate.color   = rateColor(d.prateActual, d.prateMax)
@@ -243,6 +257,26 @@ function OmniHubGoodsTable:patch(rows)
             d.prateMax    = r.prateMax
             d.crateActual = r.crateActual
             d.crateMax    = r.crateMax
+        end
+    end
+    self:render()
+end
+
+-- Applies a periodic live tick (the 30s Goods-tab refresh): the server sends only goods with
+-- nonzero stock or measured rates, so zero stock + rate ACTUALS everywhere first, then patch the
+-- sent rows — an omitted good correctly renders empty/idle. Maxes are untouched (they change only
+-- with installs, which go through :patch). Re-renders the current page.
+function OmniHubGoodsTable:patchLive(rows)
+    for _, d in ipairs(self.data) do
+        d.stock, d.prateActual, d.crateActual = 0, 0, 0
+    end
+    local byName = self.byName or {}
+    for _, r in ipairs(rows or {}) do
+        local d = byName[r.name]
+        if d then
+            d.stock       = r.stock
+            d.prateActual = r.prate
+            d.crateActual = r.crate
         end
     end
     self:render()
