@@ -96,6 +96,21 @@ return function(runner)
         fls(c.isConsumed, "unknown not consumed")
     end)
 
+    -- ── canonicalName ──────────────────────────────────────────────────────────
+    runner:test("canonicalName resolves a catalog alias key to the good's real name", function()
+        local catalog = {}
+        catalog["Aluminum"]  = { name = "Aluminum" }
+        catalog["Aluminium"] = catalog["Aluminum"]  -- vanilla backwards-compat alias (goods.lua)
+        eq(OmniHubTrading.canonicalName("Aluminium", catalog), "Aluminum", "alias key resolves")
+        eq(OmniHubTrading.canonicalName("Aluminum", catalog), "Aluminum", "real name unchanged")
+    end)
+
+    runner:test("canonicalName passes through unknown names and a nil catalog", function()
+        eq(OmniHubTrading.canonicalName("Unknown", { Steel = { name = "Steel" } }), "Unknown",
+            "name absent from catalog unchanged")
+        eq(OmniHubTrading.canonicalName("Steel", nil), "Steel", "nil catalog unchanged")
+    end)
+
     -- ── setMark ────────────────────────────────────────────────────────────────
     runner:test("setMark stores the explicit boolean (opt-in needs true)", function()
         local m = {}
