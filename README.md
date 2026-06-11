@@ -152,6 +152,7 @@ messages its owning faction in chat — alliance hubs message alliance chat:
 
 | Setting | Default | Range |
 |---|---|---|
+| Founding cost | 15 M cr | 0–500 M cr |
 | Modules for sale at the Supplier | 10 | 1–200 |
 | Stock per module (min / max) | 5 / 20 | 1–9999 |
 | Module price factor | 100 % | 10–500 % |

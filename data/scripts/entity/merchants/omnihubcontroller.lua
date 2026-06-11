@@ -1847,6 +1847,9 @@ function OmniHub.receiveHubConfig(cfg)
     -- receiveGoods diagnostics) obey the same gate as the server's. Without this the client copy of
     -- hubDebug stays false forever and client debug output is impossible.
     if cfg and cfg.debug ~= nil then hubDebug = cfg.debug and true or false end
+    -- Same mirror for the events toggle: nothing client-side reads it today (emitEvent is
+    -- server-only), but a stale client copy is a trap for future client-side gating.
+    if cfg and cfg.events ~= nil then eventsEnabled = cfg.events and true or false end
     if not configUI then return end
     configUI:apply(cfg)
 end

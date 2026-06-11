@@ -55,13 +55,15 @@ Status: approved design, pre-implementation
 Engine-independent (same style as `rates.lua`), covered by an off-engine suite. API:
 
 - `OmniHubEvents.new()` → state: pending trade records, digest timer, condition latches.
-- `recordTrade(s, kind, goodName, amount, price, partnerName)` — accumulate a completed docked
-  trade (`kind` = "buy" | "sell").
+- `recordTrade(s, kind, goodName, amount, price)` — accumulate a completed docked trade
+  (`kind` = "buy" | "sell"). Partner names are not carried into events (the per-transaction
+  partner stays in the Statistics tab's transaction log).
 - `advance(s, dt)` → returns the events due this tick: a **digest** payload when ≥300 s (5 min)
   have passed since the first pending record (flush at most once per 5 min, only when non-empty),
   plus any stall events whose threshold elapsed (see `recordStallState`). Digest aggregates
   per-good totals and net credits, listing at most 4 goods by traded value with a "+N more"
-  suffix, e.g. *"Sold Steel ×120, bought Coal ×80 +3 more — net +45,000 cr"*.
+  suffix, e.g. *"Trade summary: sold Steel x120; bought Coal x80 +3 more — net +45,000 cr"*
+  (as implemented; sold and bought goods are grouped, ASCII "x").
 - `tradeFailed(goodName, amount, reason)` → immediate event payload. Reasons map from the
   existing failure branches: partner cannot pay, stock cap reached, nothing in stock, ship hold
   full, immediate-wave failure code.
@@ -96,9 +98,10 @@ wall-clock.
   for the other fields. Single master checkbox; no per-event toggles (can be added later).
 - Emit helper, vanilla pattern:
   `Faction(Entity().factionIndex):sendChatMessage(Entity(), <ChatMessageType>, msg, ...)`.
-  - Message text carries hub name, sector name, sector coords (vanilla `\s(%i:%i)` style), the
-    related entity's **raw `name`** (never `translatedName` server-side — it errors and logs), and
-    the related entity's owner faction name where relevant.
+  - Message text carries hub name, sector name, and sector coords; any entity reference uses the
+    **raw `name`** (never `translatedName` server-side — it errors and logs). Partner faction
+    names are not included in event texts (implemented choice; they remain in the Statistics
+    transaction log).
   - **Hub id (entity index) is appended only when the server's `GameSettings().devMode` is on**,
     checked at emit time. Regular players see no internal ids.
   - Severity mapping: digests → Information; failures and condition events → Warning/Error
