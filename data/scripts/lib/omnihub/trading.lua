@@ -54,6 +54,35 @@ function OmniHubTrading.setMark(map, name, enabled)
     return map
 end
 
+-- Builds the set of goods the hub may list/trade: every name appearing in any production's
+-- ingredients, results, or garbages — i.e. goods that are part of a production chain. Pass the
+-- ambient `productions` array (vanilla productionsindex; includes mines and modded productions).
+-- This deliberately excludes catalog goods no production touches: ores, rift ores/loot, salvage
+-- scrap (Scrap Iron..Avorion — NOT the produced good "Scrap Metal", which stays in) and illegal
+-- goods. All three part lists matter: Diamond/Gem are ingredient-only, Toxic Waste is garbage-only.
+function OmniHubTrading.buildTradeableSet(productions)
+    local set = {}
+    for _, prod in ipairs(productions or {}) do
+        for _, part in ipairs({ prod.ingredients, prod.results, prod.garbages }) do
+            for _, item in ipairs(part or {}) do
+                set[item.name] = true
+            end
+        end
+    end
+    return set
+end
+
+-- Drops marks whose good is not in the tradeable set (e.g. an ore marked before the
+-- production-chain filter existed): a stale mark would otherwise keep trading the good
+-- invisibly via buildTradeLists. Returns a new map with only tradeable-good marks.
+function OmniHubTrading.pruneMarks(map, tradeable)
+    local out = {}
+    for name, v in pairs(map or {}) do
+        if tradeable[name] then out[name] = v end
+    end
+    return out
+end
+
 -- Resolves a goods-catalog KEY to the good's real (TradingGood) name. Vanilla goods.lua defines
 -- backwards-compatibility alias keys whose key differs from the good's name (goods["Aluminium"] =
 -- goods["Aluminum"], goods["Silicium"] = goods["Silicon"]). Marks — and everything derived from

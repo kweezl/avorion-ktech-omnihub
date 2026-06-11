@@ -111,6 +111,59 @@ return function(runner)
         eq(OmniHubTrading.canonicalName("Steel", nil), "Steel", "nil catalog unchanged")
     end)
 
+    -- ── buildTradeableSet ──────────────────────────────────────────────────────
+    -- Productions array shaped like vanilla productionsindex entries. "Gem" is ingredient-only
+    -- (consumed, never produced — the real Diamond/Gem case); "Toxic Waste" is garbage-only.
+    local function makeProductions()
+        return {
+            { ingredients = { { name = "Scrap Metal", amount = 12 }, { name = "Coal", amount = 4 } },
+              results     = { { name = "Steel", amount = 6 } },
+              garbages    = {} },
+            { ingredients = { { name = "Gem", amount = 1 } },
+              results     = { { name = "Jewelry", amount = 2 } },
+              garbages    = { { name = "Toxic Waste", amount = 1 } } },
+            { ingredients = {},
+              results     = { { name = "Scrap Metal", amount = 60 } } },  -- no garbages key (trader-style)
+        }
+    end
+
+    runner:test("buildTradeableSet unions ingredients, results and garbages", function()
+        local set = OmniHubTrading.buildTradeableSet(makeProductions())
+        tru(set["Steel"], "result tradeable")
+        tru(set["Scrap Metal"], "ingredient+result tradeable")
+        tru(set["Coal"], "ingredient tradeable")
+        tru(set["Gem"], "ingredient-only good tradeable (Diamond/Gem case)")
+        tru(set["Toxic Waste"], "garbage-only good tradeable (Toxic Waste case)")
+    end)
+
+    runner:test("buildTradeableSet excludes goods in no production (ores, salvage, illegal)", function()
+        local set = OmniHubTrading.buildTradeableSet(makeProductions())
+        fls(set["Iron Ore"] == true, "ore not tradeable")
+        fls(set["Scrap Iron"] == true, "salvage scrap not tradeable")
+        fls(set["Acron Drug"] == true, "illegal good not tradeable")
+    end)
+
+    runner:test("buildTradeableSet is empty for an empty or nil productions array", function()
+        eq(next(OmniHubTrading.buildTradeableSet({})), nil, "empty productions -> empty set")
+        eq(next(OmniHubTrading.buildTradeableSet(nil)), nil, "nil productions -> empty set")
+    end)
+
+    -- ── pruneMarks ─────────────────────────────────────────────────────────────
+    runner:test("pruneMarks drops marks for non-tradeable goods, keeps the rest", function()
+        local tradeable = OmniHubTrading.buildTradeableSet(makeProductions())
+        local marks = { ["Steel"] = true, ["Coal"] = false, ["Iron Ore"] = true, ["Scrap Iron"] = false }
+        local out = OmniHubTrading.pruneMarks(marks, tradeable)
+        eq(out["Steel"], true,  "tradeable true mark kept")
+        eq(out["Coal"], false,  "tradeable false mark kept")
+        eq(out["Iron Ore"], nil,   "stale ore mark removed")
+        eq(out["Scrap Iron"], nil, "stale salvage mark removed")
+    end)
+
+    runner:test("pruneMarks returns an empty table for a nil map", function()
+        local out = OmniHubTrading.pruneMarks(nil, { Steel = true })
+        eq(next(out), nil, "nil map -> empty table")
+    end)
+
     -- ── setMark ────────────────────────────────────────────────────────────────
     runner:test("setMark stores the explicit boolean (opt-in needs true)", function()
         local m = {}

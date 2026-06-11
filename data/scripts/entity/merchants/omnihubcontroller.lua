@@ -51,6 +51,13 @@ local MIN_CARGO_BAY = 25000
 local MIN_TIME_TO_PRODUCE = 15.0  -- seconds, matches factory.lua
 local PRICE_MIN, PRICE_MAX = 0.8, 1.2  -- ±20% base-price slider range
 
+-- Goods the hub may list/trade: only goods that are part of a production chain (any production's
+-- ingredients/results/garbages — `productions` is the ambient productionsindex array). Keeps every
+-- factory good incl. dangerous ones (Toxic Waste) and "Scrap Metal"; drops ores, rift ores/loot,
+-- salvage scrap (Scrap Iron..Avorion) and illegal goods. Gates the Goods rows (buildGoodRow), the
+-- mark RPCs, and restore-time mark pruning.
+local tradeableGoods = OmniHubTrading.buildTradeableSet(productions)
+
 -- ────────────────────────────────────────────────────────────────
 -- Server-side state (persisted through secure/restore)
 -- ────────────────────────────────────────────────────────────────
@@ -354,8 +361,11 @@ function OmniHub.restore(data)
     installed              = data.installed          or {}
     productionProgress     = data.productionProgress or {}
     OmniHub.traderCooldown = data.traderCooldown     or 0
-    sellEnabled            = data.sellEnabled        or {}
-    buyEnabled             = data.buyEnabled         or {}
+    -- Prune marks for goods outside the production-chain set (e.g. an ore marked before the
+    -- tradeableGoods filter existed): a stale mark would otherwise keep trading the good
+    -- invisibly via buildTradeLists, with no UI row left to untick it.
+    sellEnabled            = OmniHubTrading.pruneMarks(data.sellEnabled, tradeableGoods)
+    buyEnabled             = OmniHubTrading.pruneMarks(data.buyEnabled, tradeableGoods)
     stats                  = data.stats              or OmniHubStats.new()
     -- data.maxLimit is the current key; data.reserve (with legacy field names) is read for hubs saved
     -- before the rename so existing playtest stations keep their configured limits.
@@ -1085,12 +1095,23 @@ end
 -- NOTE: these do NOT push the Buy/Sell lists. The client flips its Goods checkbox optimistically and
 -- marks the Buy/Sell tabs dirty; those refresh lazily when the player selects them (saves a full
 -- buy/sell payload per toggle).
+-- Rejects a mark request for a good outside the production-chain set. The Goods tab never shows
+-- such a row, so the request means a tampered or outdated client — reject + log (no kick API).
+local function rejectNonTradeableMark(name)
+    if tradeableGoods[name] then return false end
+    local player = Player(callingPlayer)
+    local who = (player and player.name or "?") .. " (#" .. tostring(callingPlayer) .. ")"
+    hubWarn("SECURITY: %s tried to mark non-tradeable good %s — rejected.", who, tostring(name))
+    return true
+end
+
 function OmniHub.setGoodSell(name, enabled)
     if not onServer() then return end
     if not callerIsOwner() then return end
     -- Store marks under the good's REAL name: a vanilla alias key (goods["Aluminium"]) would put the
     -- cap under a key no TradingGood.name lookup ever hits, rendering 0/0 and blocking NPC trades.
     name = OmniHubTrading.canonicalName(name, goods)
+    if rejectNonTradeableMark(name) then return end
     OmniHubTrading.setMark(sellEnabled, name, enabled)  -- explicit true/false
     OmniHub.rebuild()
     -- Push the refreshed caps/amounts immediately: a freshly marked good is already visible in
@@ -1103,6 +1124,7 @@ function OmniHub.setGoodBuy(name, enabled)
     if not onServer() then return end
     if not callerIsOwner() then return end
     name = OmniHubTrading.canonicalName(name, goods)  -- see setGoodSell
+    if rejectNonTradeableMark(name) then return end
     OmniHubTrading.setMark(buyEnabled, name, enabled)
     OmniHub.rebuild()
     OmniHub.sendStockSyncTo(Player(callingPlayer))
@@ -1336,10 +1358,12 @@ local function currentBoostMap()
     return boosted
 end
 
--- Builds one Goods-table row for `name` (nil if the good has no positive price). `maxR` is a
+-- Builds one Goods-table row for `name` (nil if the good is not production-chain tradeable or has
+-- no positive price). `maxR` is a
 -- precomputed maxRates result. Checkbox state = the EXPLICIT mark (unticked by default; installing a
 -- module never auto-enables trading). Prices come straight from goods[] (correct regardless of mark).
 function OmniHub.buildGoodRow(name, maxR, sellF, buyF)
+    if not tradeableGoods[name] then return nil end  -- production-chain goods only
     local g = goods[name]
     if type(g) ~= "table" or not g.price or g.price <= 0 then return nil end
     local sdf, pct = OmniHub.regionalInfo(name)
@@ -1363,7 +1387,8 @@ function OmniHub.sendHubGoodsTo(player)
     local sellF = OmniHub.trader.sellPriceFactor
     local buyF  = OmniHub.trader.buyPriceFactor
 
-    -- Trading-station mode: list EVERY good so the player can opt any good into Buy/Sell.
+    -- Trading-station mode: list every production-chain good (tradeableGoods gate in buildGoodRow)
+    -- so the player can opt any of them into Buy/Sell.
     -- OPTIMIZE LATER (docs/performance-notes.md): regionalInfo (economyupdater) once PER GOOD (~200)
     -- per window open. Acceptable as a once-per-open cost for now; cache if it hitches.
     local list = {}

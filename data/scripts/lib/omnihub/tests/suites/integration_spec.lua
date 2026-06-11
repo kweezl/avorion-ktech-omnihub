@@ -267,21 +267,35 @@ return function(runner)
 
     runner:test("secure/restore preserves marks and stats", function()
         local snapshot = OmniHub.secure()
-        local key = firstCatalogKey()
+        -- Marks only persist for production-chain goods (restore prunes the rest), so mark the
+        -- recipe's own result + ingredient — both tradeable by construction. An ingredient-bearing
+        -- module is picked deterministically (pairs order is undefined; collectors have none).
+        local key, resName, ingName
+        for _, entry in ipairs(OmniHubModuleDefs.getSortedList()) do
+            local r = OmniHubModuleDefs.resolveRecipe(entry.key)
+            if r and r.ingredients and r.ingredients[1] and r.results and r.results[1] then
+                key, resName, ingName = entry.key, r.results[1].name, r.ingredients[1].name
+                break
+            end
+        end
+        notn(key, "catalog has a module with both an ingredient and a result")
 
         local stats = { lifetimeProfit = 1234, cursor = 1, buckets = {}, transactions = {} }
         for i = 1, 60 do stats.buckets[i] = 0 end
         stats.buckets[1] = 500
 
         OmniHub.restore({ installed = { [key] = 1 }, productionProgress = {}, traderCooldown = 7,
-                          sellEnabled = { Widget = false }, buyEnabled = { Ore = false }, stats = stats,
-                          tradingData = snapshot.tradingData })
+                          sellEnabled = { [resName] = false, OmniHubTestBogusGood = true },
+                          buyEnabled  = { [ingName] = false, OmniHubTestBogusGood = true },
+                          stats = stats, tradingData = snapshot.tradingData })
 
         local after = OmniHub.secure()
         eq(after.stats.lifetimeProfit, 1234, "lifetime profit persists")
         eq(after.stats.buckets[1],     500,  "last-hour bucket persists")
-        eq(after.sellEnabled.Widget,   false, "sell mark persists")
-        eq(after.buyEnabled.Ore,       false, "buy mark persists")
+        eq(after.sellEnabled[resName], false, "sell mark persists")
+        eq(after.buyEnabled[ingName],  false, "buy mark persists")
+        eq(after.sellEnabled.OmniHubTestBogusGood, nil, "non-production-chain sell mark pruned")
+        eq(after.buyEnabled.OmniHubTestBogusGood,  nil, "non-production-chain buy mark pruned")
 
         OmniHub.restore(snapshot)
     end)
