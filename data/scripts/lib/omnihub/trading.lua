@@ -46,6 +46,28 @@ function OmniHubTrading.classifyGood(name, agg)
     }
 end
 
+-- Sell-priority tier for the NPC-buyer pickup policy (OmniHubTradingDecision.sellEligible):
+--   3 = ingredient of some installed production (wins over result for chained goods — anything
+--       the hub consumes is protected by the highest threshold),
+--   2 = result only,
+--   1 = neither (garbage-only and pure trading-station goods: dump ASAP).
+function OmniHubTrading.sellTier(name, agg)
+    if agg.ingAmounts[name] ~= nil then return 3 end
+    if agg.resAmounts[name] ~= nil then return 2 end
+    return 1
+end
+
+-- Maps the sold-good name list to the {name, tier} array planWave's pickup side consumes
+-- (agg.sold). Computed once per rebuild — the classification only changes with the install set
+-- or the marks, never per wave.
+function OmniHubTrading.buildSoldPickupList(soldNames, agg)
+    local list = {}
+    for _, name in ipairs(soldNames or {}) do
+        list[#list + 1] = { name = name, tier = OmniHubTrading.sellTier(name, agg) }
+    end
+    return list
+end
+
 -- Stores the player's EXPLICIT Buy/Sell mark for a good (true or false). Absent = role default (see
 -- buildTradeLists). Trading-station mode needs explicit true (to opt a non-produced/consumed good in),
 -- so unlike the old sparse map we store the boolean as given.

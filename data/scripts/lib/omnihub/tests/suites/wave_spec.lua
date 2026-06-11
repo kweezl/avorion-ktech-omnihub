@@ -29,11 +29,10 @@ local function rng(testResult)
     }
 end
 
--- agg fixture: one ingredient, one result.
+-- agg fixture: one ingredient to deliver, one sell-marked product (tier 2) to pick up.
 local AGG = {
     ingredients = { { name = "ore",   amount = 10 } },
-    results     = { { name = "plate", amount = 5 } },
-    garbages    = {},
+    sold        = { { name = "plate", tier = 2 } },
 }
 
 return function(runner)
@@ -113,7 +112,7 @@ return function(runner)
 
     runner:test("planWave packs a mixed manifest (delivery + pickup) into one ship", function()
         -- ore buy-marked, empty -> delivery min(9000,500)-0 = 500.
-        -- plate sell-marked at 900/1000 stock (>80%) -> pickup, amount 600 (rng stub).
+        -- plate sell-marked, tier 2 at 900/1000 fill (>=30%) -> pickup, amount 600 (rng stub).
         local q = query({ ore = 0, plate = 900 }, { ore = 9000, plate = 1000 })
         local m = Decide.planWave(AGG, q, rng(false), { maxShips = 3 })
         eq(#m, 1, "one mixed ship")
@@ -147,7 +146,7 @@ return function(runner)
         -- gold price 50000 > cap 30000: even one unit never fits; ore still ships.
         local agg = {
             ingredients = { { name = "gold", amount = 5 }, { name = "ore", amount = 10 } },
-            results = {}, garbages = {},
+            sold = {},
         }
         local q = query({ gold = 0, ore = 0 }, { gold = 100, ore = 9000 }, { gold = 50000 })
         local m = Decide.planWave(agg, q, rng(false), { maxShips = 3, shipValue = 30000 })
@@ -162,18 +161,19 @@ return function(runner)
     end)
 
     runner:test("planWave immediate mode clamps pickups to current stock (code-1 regression)", function()
-        -- Zero stock but value-gate eligible (expensive good): ship mode plans optimistically
-        -- (production accrues during the fly-in; sellToShip clamps at dock), but immediate mode
-        -- sells INSTANTLY — an optimistic amount comes back as vanilla error 1. No stock -> no pickup.
+        -- Tier 1 is eligible at ANY positive stock: ship mode plans optimistically (production
+        -- accrues during the fly-in; sellToShip clamps at dock), but immediate mode sells
+        -- INSTANTLY — an optimistic amount comes back as vanilla error 1. No stock -> no pickup.
+        local agg = { ingredients = AGG.ingredients, sold = { { name = "plate", tier = 1 } } }
         local q = query({ ore = 0, plate = 0 }, { ore = 9000, plate = 1000 }, { plate = 30000 })
-        local m = Decide.planWave(AGG, q, rng(true), { maxShips = 3, immediate = true })
+        local m = Decide.planWave(agg, q, rng(true), { maxShips = 3, immediate = true })
         for _, ship in ipairs(m) do
             eq(#ship.pickups, 0, "no pickup planned against zero stock in immediate mode")
         end
 
         -- Partial stock clamps the amount (the rng stub would otherwise plan 600).
         q = query({ ore = 0, plate = 150 }, { ore = 9000, plate = 1000 }, { plate = 30000 })
-        m = Decide.planWave(AGG, q, rng(true), { maxShips = 3, immediate = true })
+        m = Decide.planWave(agg, q, rng(true), { maxShips = 3, immediate = true })
         local found
         for _, ship in ipairs(m) do
             for _, p in ipairs(ship.pickups) do
@@ -185,10 +185,10 @@ return function(runner)
     end)
 
     runner:test("planWave never plans a pickup for a good with ZERO stock (any mode)", function()
-        -- The value gate passes for expensive goods even at zero stock; without this rule a buyer
-        -- flies in, docks, and leaves empty ("docked pickup ... moved NO stock").
+        -- Even tier 1 ("sell ASAP") needs stock > 0; without this rule a buyer flies in, docks,
+        -- and leaves empty ("docked pickup ... moved NO stock").
         local q = query({ plate = 0 }, { plate = 1000 }, { plate = 30000 })
-        local m = Decide.planWave({ ingredients = {}, results = AGG.results, garbages = {} },
+        local m = Decide.planWave({ ingredients = {}, sold = { { name = "plate", tier = 1 } } },
             q, rng(true), { maxShips = 1 })
         eq(#m, 0, "no manifests at all — nothing else was eligible")
     end)
@@ -197,10 +197,73 @@ return function(runner)
         -- Stock 5 (>0): the pickup is planned with the vanilla optimistic amount — production
         -- accrues during the fly-in and sellToShip clamps to the real stock at dock time.
         local q = query({ plate = 5 }, { plate = 1000 }, { plate = 30000 })
-        local m = Decide.planWave({ ingredients = {}, results = AGG.results, garbages = {} },
+        local m = Decide.planWave({ ingredients = {}, sold = { { name = "plate", tier = 1 } } },
             q, rng(true), { maxShips = 1 })
         eq(#m, 1)
         eq(m[1].pickups[1].amount, 600, "optimistic amount; dock-time clamp handles the rest")
+    end)
+
+    -- ── tiered pickup ordering ──────────────────────────────────────────────
+    runner:test("planWave orders pickups tier-ascending (non-chain, then products, then ingredients)", function()
+        -- All three eligible: scrap t1 at any stock, plate t2 at 50% (>=30%), wire t3 at 90% (>=80%).
+        -- Listed in reverse order to prove the sort, not the input order, decides.
+        local agg = { ingredients = {}, sold = {
+            { name = "wire",  tier = 3 },
+            { name = "plate", tier = 2 },
+            { name = "scrap", tier = 1 },
+        } }
+        local q = query({ scrap = 100, plate = 500, wire = 900 },
+            { scrap = 1000, plate = 1000, wire = 1000 })
+        local m = Decide.planWave(agg, q, rng(false), { maxShips = 1 })
+        eq(#m, 1)
+        eq(#m[1].pickups, 3)
+        eq(m[1].pickups[1].name, "scrap", "tier 1 first despite lowest fill")
+        eq(m[1].pickups[2].name, "plate", "tier 2 second")
+        eq(m[1].pickups[3].name, "wire",  "tier 3 last")
+    end)
+
+    runner:test("planWave orders same-tier pickups by fill ratio descending (most stock first)", function()
+        -- Both tier 1; bolts 70% fill must beat nuts 20% even though nuts has more units.
+        local agg = { ingredients = {}, sold = {
+            { name = "nuts",  tier = 1 },
+            { name = "bolts", tier = 1 },
+        } }
+        local q = query({ nuts = 2000, bolts = 700 }, { nuts = 10000, bolts = 1000 })
+        local m = Decide.planWave(agg, q, rng(false), { maxShips = 1 })
+        eq(m[1].pickups[1].name, "bolts", "70% fill before 20% fill")
+        eq(m[1].pickups[2].name, "nuts")
+    end)
+
+    runner:test("planWave breaks equal tier+fill ties by name (deterministic)", function()
+        local agg = { ingredients = {}, sold = {
+            { name = "zinc", tier = 1 },
+            { name = "coal", tier = 1 },
+        } }
+        local q = query({ zinc = 500, coal = 500 }, { zinc = 1000, coal = 1000 })
+        local m = Decide.planWave(agg, q, rng(false), { maxShips = 1 })
+        eq(m[1].pickups[1].name, "coal")
+        eq(m[1].pickups[2].name, "zinc")
+    end)
+
+    runner:test("planWave filters each tier by its own threshold in one wave", function()
+        -- plate t2 at 29% is OUT; wire t3 at 79% is OUT; scrap t1 at 1% is IN.
+        local agg = { ingredients = {}, sold = {
+            { name = "scrap", tier = 1 },
+            { name = "plate", tier = 2 },
+            { name = "wire",  tier = 3 },
+        } }
+        local q = query({ scrap = 10, plate = 290, wire = 790 },
+            { scrap = 1000, plate = 1000, wire = 1000 })
+        local m = Decide.planWave(agg, q, rng(false), { maxShips = 1 })
+        eq(#m, 1)
+        eq(#m[1].pickups, 1, "only the tier-1 good qualifies")
+        eq(m[1].pickups[1].name, "scrap")
+    end)
+
+    runner:test("planWave skips a sold good with no price (unknown catalog entry)", function()
+        local agg = { ingredients = {}, sold = { { name = "mystery", tier = 1 } } }
+        local q = query({ mystery = 500 }, { mystery = 1000 }, { mystery = false })
+        eq(#Decide.planWave(agg, q, rng(false), { maxShips = 1 }), 0)
     end)
 
     runner:test("planWave orders deliveries by scarcity (lowest have/need first)", function()
@@ -209,7 +272,7 @@ return function(runner)
         -- wave/budget feeds the production bottleneck instead of first-listed-wins.
         local agg = {
             ingredients = { { name = "ore", amount = 2 }, { name = "fuel", amount = 4 } },
-            results = {}, garbages = {},
+            sold = {},
         }
         local q = query({ ore = 1, fuel = 0 }, { ore = 9000, fuel = 9000 })
         local m = Decide.planWave(agg, q, rng(false), { maxShips = 1, shipValue = 10000 })

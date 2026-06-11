@@ -96,6 +96,11 @@ local directorHeartbeatClock = 0
 -- nil when no factory modules are installed.
 local aggregatedProduction = nil
 
+-- Sell-marked goods as planWave's pickup input: {name, tier} per good (see
+-- OmniHubTrading.buildSoldPickupList). Recomputed only in rebuild() — its inputs (install set,
+-- sell marks) change nowhere else — never per wave. Not persisted; derivable.
+local soldPickupList = {}
+
 -- Per-good max-limit cache (UNITS), recomputed only on module/config change via
 -- OmniHub.recomputeMaxLimits (see lib/omnihub/maxlimit.lua) — never per tick. Reassigned
 -- wholesale on recompute; the trader.getMaxStock closure below reads it through the upvalue, so the
@@ -600,6 +605,7 @@ function OmniHub.rebuild()
     OmniHub.initializeTrading(bought, sold)
 
     aggregatedProduction = agg.aggregatedProduction
+    soldPickupList = OmniHubTrading.buildSoldPickupList(lists.soldNames, agg)
     OmniHub.updateOwnSupply()
 
     -- Reservation cache: produced/consumed goods (from agg) + EXPLICITLY traded goods (buy or
@@ -816,7 +822,9 @@ end
 -- capped by the maxTradersPerWave config and the hub's free docking positions.
 function OmniHub.requestTraders(timeStep)
     if not onServer() then return end
-    if not aggregatedProduction then return end
+    -- No production (deliveries) AND nothing sell-marked (pickups): nothing a wave could do.
+    -- A module-less trading hub with sell marks still gets buyer waves for its tier-1 goods.
+    if not aggregatedProduction and #soldPickupList == 0 then return end
 
     OmniHub.traderCooldown = OmniHub.traderCooldown - timeStep
     if OmniHub.traderCooldown > 0 then return end
@@ -844,9 +852,9 @@ function OmniHub.requestTraders(timeStep)
 
     -- Owner trade-direction gates (vanilla activelyRequest/activelySell) filter the wave's sides.
     local agg = {
-        ingredients = OmniHub.trader.activelyRequest and aggregatedProduction.ingredients or {},
-        results     = OmniHub.trader.activelySell    and aggregatedProduction.results     or {},
-        garbages    = OmniHub.trader.activelySell    and aggregatedProduction.garbages    or {},
+        ingredients = (OmniHub.trader.activelyRequest and aggregatedProduction)
+                          and aggregatedProduction.ingredients or {},
+        sold        = OmniHub.trader.activelySell and soldPickupList or {},
     }
 
     local docks     = DockingPositions(entity)
@@ -913,17 +921,23 @@ local function buildShadowSnapshot()
     local entity = Entity()
     local q = tradeQuery()
     local inventory, tradeCaps = {}, {}
+    local function snapName(name)
+        if inventory[name] == nil then
+            inventory[name] = q.getNumGoods(name)
+            tradeCaps[name] = q.getMaxGoods(name)
+        end
+    end
     if aggregatedProduction then
         local function snap(list)
-            for _, g in pairs(list or {}) do
-                inventory[g.name] = q.getNumGoods(g.name)
-                tradeCaps[g.name] = q.getMaxGoods(g.name)
-            end
+            for _, g in pairs(list or {}) do snapName(g.name) end
         end
         snap(aggregatedProduction.ingredients)
         snap(aggregatedProduction.results)
         snap(aggregatedProduction.garbages)
     end
+    -- Sold goods beyond the production sides (tier-1 trading goods) need stock/cap in the shadow
+    -- too, or the offline planner sees 0/0 and never picks them up.
+    for _, s in ipairs(soldPickupList) do snapName(s.name) end
 
     local sector = Sector()
     local docks  = DockingPositions(entity)
@@ -934,6 +948,7 @@ local function buildShadowSnapshot()
         inventory = inventory,
         tradeCaps = tradeCaps,
         stockCaps = maxLimitByGood,
+        sold      = soldPickupList,
         freeSpace = entity.freeCargoSpace,
         buyFactor  = OmniHub.trader.buyPriceFactor,
         sellFactor = OmniHub.trader.sellPriceFactor,

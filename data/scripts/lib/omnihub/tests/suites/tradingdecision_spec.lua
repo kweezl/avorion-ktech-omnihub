@@ -17,10 +17,6 @@ local function query(stock, max, price)
     }
 end
 
-local function rng(result)
-    return { test = function(_, _) return result end }
-end
-
 return function(runner)
     runner:suite("tradingdecision")
 
@@ -60,29 +56,34 @@ return function(runner)
         nilq(d)  -- have(500) < amount(600) so we proceed, but min(500,500)-500 = 0 -> nil
     end)
 
-    -- ── decideBuyer ─────────────────────────────────────────────────────────────
-    runner:test("buyer: nil when good not externally sold (max==0) — A2 regression", function()
-        local d = Decide.decideBuyer({name = "Steel", amount = 5}, query({["Steel"] = 9999}, {}), rng(true))
-        nilq(d, "no buyer for a good the hub doesn't sell")
+    -- ── sellEligible (tiered sell policy gate; replaced decideBuyer) ────────────
+    runner:test("sellEligible: false when good not externally sold (max==0) — A2 regression", function()
+        tru(not Decide.sellEligible(1, 9999, 0), "no pickup for a good the hub doesn't sell")
     end)
 
-    runner:test("buyer: nil when the good has no price", function()
-        local d = Decide.decideBuyer({name = "Mystery", amount = 5},
-            query({}, {["Mystery"] = 1000}, {["Mystery"] = false}), rng(true))
-        nilq(d)
+    runner:test("sellEligible: false at zero stock, every tier (empty-buyer regression)", function()
+        tru(not Decide.sellEligible(1, 0, 1000))
+        tru(not Decide.sellEligible(2, 0, 1000))
+        tru(not Decide.sellEligible(3, 0, 1000))
     end)
 
-    runner:test("buyer: spawns when stock exceeds 80% of max", function()
-        local d = Decide.decideBuyer({name = "Steel", amount = 100},
-            query({["Steel"] = 800}, {["Steel"] = 1000}), rng(false))
-        notn(d); eq(d.name, "Steel")  -- newAmount 900 > 800
+    runner:test("sellEligible: tier 1 sells at any positive stock", function()
+        tru(Decide.sellEligible(1, 1, 1000), "1/1000 is enough for tier 1")
     end)
 
-    runner:test("buyer: high-value path gated by rng (true -> spawn, false -> nil)", function()
-        -- newAmount below 80% of max, but value > 100000: rng decides.
-        local q = query({["Steel"] = 100}, {["Steel"] = 100000}, {["Steel"] = 100})
-        local good = {name = "Steel", amount = 1100}  -- newAmount 1200, value 1200*100 = 120000 > 100000
-        eq(Decide.decideBuyer(good, q, rng(true)).name, "Steel", "spawns when rng:test true")
-        nilq(Decide.decideBuyer(good, q, rng(false)), "no spawn when rng:test false")
+    runner:test("sellEligible: tier 2 needs fill >= 30% (inclusive boundary)", function()
+        tru(not Decide.sellEligible(2, 299, 1000), "29.9% below the product threshold")
+        tru(Decide.sellEligible(2, 300, 1000), "exactly 30% qualifies")
+        tru(Decide.sellEligible(2, 900, 1000))
+    end)
+
+    runner:test("sellEligible: tier 3 needs fill >= 80% (inclusive boundary)", function()
+        tru(not Decide.sellEligible(3, 799, 1000), "79.9% below the ingredient threshold")
+        tru(Decide.sellEligible(3, 800, 1000), "exactly 80% qualifies")
+    end)
+
+    runner:test("sellEligible thresholds are the exported constants", function()
+        eq(Decide.SELL_FILL_PRODUCT, 0.30)
+        eq(Decide.SELL_FILL_INGREDIENT, 0.80)
     end)
 end

@@ -86,12 +86,20 @@ so paying over base price attracts suppliers, and underpaying attracts customers
 
 A **seller** is summoned for an ingredient only when stock is below the per-cycle need, the good is externally tradeable, and the delivery amount `min(limit, 500) − stock` is positive.
 
-A **buyer** is summoned for a product when either condition holds:
+**Buyers** follow a tiered sell policy over every sell-marked good. Each good is classified by its
+role in the hub's installed production, and becomes eligible for NPC pickup once its stock reaches
+the tier's share of the good's limit:
 
-```
-stock + per-cycle output > 80 % of the good's limit
-or  stock value > 100,000 credits  (30 % chance per check)
-```
+| Priority | Goods | Sold when |
+|---|---|---|
+| 1 | neither product nor ingredient (by-products/garbage and pure trading goods) | any stock at all |
+| 2 | products | stock ≥ 30 % of limit |
+| 3 | ingredients of installed modules (incl. goods that are both product and ingredient) | stock ≥ 80 % of limit |
+
+Lower tiers sell first within a wave; ingredients are protected until they genuinely overflow, and
+unwanted stock is dumped as soon as possible. Eligibility and order are fully deterministic — no
+dice rolls. A hub with no modules installed (pure trading station) still summons buyers for its
+sell-marked goods, online and offline.
 
 ### Trade waves
 
@@ -101,6 +109,7 @@ NPC traders arrive in **waves** of mixed-cargo ships:
 - A new wave starts only when **no trader is still serving the hub**; a backstop forces a restart after several consecutive blocked windows so a stuck ship can never wedge trading forever.
 - **Per-ship budget** follows the vanilla richness formula — `sector richness factor × 750,000` credits — with a 20 % chance per ship of a high-value vessel carrying **1–5×** that budget. An optional cargo-volume cap applies as well.
 - **Deliveries are packed most-starved first** (lowest stock-to-need ratio), so a tight wave or budget feeds the production bottleneck rather than whichever ingredient the recipe lists first. Items that overflow one ship spill into the next; whatever exceeds the wave waits for the next one.
+- **Pickups are packed by sell priority** (the tier table above), fullest storage first within a tier, so a tight wave hauls away the most pressing stock first.
 - Deliveries are capped by what the **owner can actually pay** — goods the owner's balance cannot cover are never requested. If a docked delivery still fails the all-or-nothing payment check, the trader retries with half of what the balance covers: `⌊⌊balance / unit cost⌋ / 2⌋`, deliberately leaving budget for the wave's other deliveries.
 - Buyer pickups request `100 + random(0–1000)` units, clamped to real stock at the dock.
 - Docked ships transact **deliveries first, then pickups** — selling their cargo frees hold space for what they haul away.
