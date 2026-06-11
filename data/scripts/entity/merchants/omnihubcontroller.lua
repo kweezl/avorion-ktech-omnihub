@@ -101,6 +101,7 @@ local aggregatedProduction = nil
 -- wholesale on recompute; the trader.getMaxStock closure below reads it through the upvalue, so the
 -- reassignment is visible there.
 local maxLimitByGood = {}
+local recommendedCapacity = 0  -- assembly needed for max speed; recomputed in rebuild()
 
 -- Per-hub reservation tuning, persisted via secure/restore and edited in the Configure tab.
 -- buyLimit = flat reserve for buy-marked passthrough goods; produced/consumed goods reserve
@@ -329,6 +330,8 @@ function OmniHub.onBlockPlanChanged(delta)
     for key in pairs(installed) do
         timeToProduce[key] = OmniHub.computeTimeToProduce(key)
     end
+    OmniHubEvents.checkStorage(hubEvents, OmniHub.collectStorage().over)
+    OmniHubEvents.checkAssembly(hubEvents, OmniHub.productionCapacity, recommendedCapacity)
 end
 
 -- ────────────────────────────────────────────────────────────────
@@ -440,6 +443,12 @@ function OmniHub.runProductionCycles(timeStep)
     end
 end
 
+-- Display name for stall messages: the module's catalog name ("Steel Factory"), key as fallback.
+local function moduleDisplayName(key)
+    local def = OmniHubModuleDefs.get(key)
+    return (def and def.name) or tostring(key)
+end
+
 function OmniHub.tickRecipe(key, count, timeStep)
     local prod = OmniHubModuleDefs.resolveRecipe(key)
     if not prod then return end
@@ -448,6 +457,7 @@ function OmniHub.tickRecipe(key, count, timeStep)
     local progress = productionProgress[key]
 
     if progress then
+        OmniHubEvents.recordStallState(hubEvents, key, moduleDisplayName(key), false)
         local advance = timeStep / ttm
         if progress.boosted then advance = advance * 2 end
         -- Smooth rate accrual: record exactly the progress made this tick (clamped at the cycle end
@@ -486,6 +496,8 @@ function OmniHub.tickRecipe(key, count, timeStep)
 
     local decision = OmniHubProduction.canStartCycle(prod, count, query)
     productionStatus[key] = decision  -- remembered for the debug logger (reason it could/couldn't start)
+    OmniHubEvents.recordStallState(hubEvents, key, moduleDisplayName(key),
+        not decision.canProduce, decision.reason, decision.good)
     if not decision.canProduce then return end
 
     -- Ingredients leave cargo up-front (vanilla behavior); their RATE is accrued smoothly over the
@@ -599,6 +611,14 @@ function OmniHub.rebuild()
     for key in pairs(installed) do
         timeToProduce[key] = OmniHub.computeTimeToProduce(key)
     end
+
+    -- Owner notifications: condition inputs (limits, capacity, install set) only change through
+    -- here, onBlockPlanChanged, or recomputeMaxLimits — evaluate the latches at each.
+    recommendedCapacity = OmniHubProduction.recommendedCapacity(
+        installed, OmniHubModuleDefs.resolveRecipe, goods, MIN_TIME_TO_PRODUCE)
+    OmniHubEvents.retainStalls(hubEvents, installed)
+    OmniHubEvents.checkStorage(hubEvents, OmniHub.collectStorage().over)
+    OmniHubEvents.checkAssembly(hubEvents, OmniHub.productionCapacity, recommendedCapacity)
 end
 
 -- Recompute the SERVER's authoritative max-limit cache from installed + marks + hubMaxLimit, for when
@@ -610,6 +630,7 @@ function OmniHub.recomputeMaxLimits()
     local agg   = OmniHubProduction.aggregate(installed, OmniHubModuleDefs.resolveRecipe)
     local lists = OmniHubTrading.buildTradeLists(sellEnabled, buyEnabled)
     maxLimitByGood = OmniHubMaxLimit.compute(agg, lists.boughtNames, hubMaxLimit, lists.soldNames)
+    OmniHubEvents.checkStorage(hubEvents, OmniHub.collectStorage().over)
 end
 
 -- Push the authoritative stock view to one client in a single RPC: per-good max-limit caps AND
@@ -757,8 +778,7 @@ local function applyWaveImmediate(manifests, tradingFactionIndex)
                     err = OmniHub.sellGoods(good, op.amount, tradingFactionIndex)
                 end
                 if err ~= 0 then
-                    hubLog("immediate wave: %s %s x%d failed (code %s)",
-                        op.kind, op.name, op.amount, tostring(err))
+                    OmniHubEvents.tradeFailed(hubEvents, "wave", op.name, op.amount, err)
                 end
             end
         end
@@ -983,8 +1003,8 @@ end
 
 -- Docked-trade failure visibility: vanilla buyFromShip/sellToShip report failures only to the
 -- VISITING ship's faction (an NPC — the owner never sees the message) and return nothing, so a
--- trader that docks and leaves without trading is otherwise invisible. Wrap both to log (debug-
--- gated) whenever a docked exchange moved no stock, with the likely reason.
+-- trader that docks and leaves without trading is otherwise invisible. Wrap both to raise an owner
+-- event whenever a docked exchange moved no stock, with the likely reason.
 function OmniHub.buyFromShip(shipIndex, goodName, amount, noDockCheck)
     local before = onServer() and OmniHub.getNumGoods(goodName) or 0
     local r = base_buyFromShip(shipIndex, goodName, amount, noDockCheck)
@@ -1002,14 +1022,12 @@ function OmniHub.buyFromShip(shipIndex, goodName, amount, noDockCheck)
 
         if unit > 0 and fullCost > 0 and not faction:canPayMoney(fullCost)
                 and partial > 0 and partial < (tonumber(amount) or 0) then
-            hubLog("docked delivery of %s x%s unaffordable (balance %s) — retrying with x%d (half of affordable)",
-                tostring(goodName), tostring(amount), tostring(faction.money), partial)
+            OmniHubEvents.tradeFailed(hubEvents, "cantpay", goodName, amount)
             base_buyFromShip(shipIndex, goodName, partial, noDockCheck)
             if OmniHub.getNumGoods(goodName) > before then return r end
         end
 
-        hubLog("docked delivery of %s x%s moved NO stock (likely: faction can't pay — balance %s — or stock cap reached)",
-            tostring(goodName), tostring(amount), tostring(Faction().money))
+        OmniHubEvents.tradeFailed(hubEvents, "nostock_in", goodName, amount)
     end
     return r
 end
@@ -1018,8 +1036,7 @@ function OmniHub.sellToShip(shipIndex, goodName, amount, noDockCheck)
     local before = onServer() and OmniHub.getNumGoods(goodName) or 0
     local r = base_sellToShip(shipIndex, goodName, amount, noDockCheck)
     if onServer() and OmniHub.getNumGoods(goodName) == before then
-        hubLog("docked pickup of %s x%s moved NO stock (likely: nothing in stock, buyer can't pay, or ship hold full)",
-            tostring(goodName), tostring(amount))
+        OmniHubEvents.tradeFailed(hubEvents, "nostock_out", goodName, amount)
     end
     return r
 end
@@ -1039,16 +1056,16 @@ end
 -- and the two paths are disjoint (buyGoods/sellGoods fire no callbacks), so nothing double-counts.
 function OmniHub.onDockedTradeBought(goodName, amount, price)
     if not onServer() then return end
-    hubLog("docked trade: bought %s x%s for %s", tostring(goodName), tostring(amount), tostring(price))
     OmniHubStats.record(stats, {kind = "buy", good = goodName, amount = amount, price = price,
                                 partner = dockedTradePartner()})
+    OmniHubEvents.recordTrade(hubEvents, "buy", goodName, amount, price)
 end
 
 function OmniHub.onDockedTradeSold(goodName, amount, price)
     if not onServer() then return end
-    hubLog("docked trade: sold %s x%s for %s", tostring(goodName), tostring(amount), tostring(price))
     OmniHubStats.record(stats, {kind = "sell", good = goodName, amount = amount, price = price,
                                 partner = dockedTradePartner()})
+    OmniHubEvents.recordTrade(hubEvents, "sell", goodName, amount, price)
 end
 
 -- Wrap the inherited buy/sell so every successful trader transaction is recorded. buyGoods/sellGoods
@@ -1062,6 +1079,7 @@ function OmniHub.buyGoods(good, amount, otherFactionIndex, monetaryOnly)
         local f = Faction(otherFactionIndex)
         OmniHubStats.record(stats, {kind = "buy", good = good.name, amount = amount, price = price,
                                     partner = f and f.name or ""})
+        OmniHubEvents.recordTrade(hubEvents, "buy", good.name, amount, price)
     end
     return code, price
 end
@@ -1072,6 +1090,7 @@ function OmniHub.sellGoods(good, amount, otherFactionIndex, monetaryOnly)
         local f = Faction(otherFactionIndex)
         OmniHubStats.record(stats, {kind = "sell", good = good.name, amount = amount, price = price,
                                     partner = f and f.name or ""})
+        OmniHubEvents.recordTrade(hubEvents, "sell", good.name, amount, price)
     end
     return code, price
 end
