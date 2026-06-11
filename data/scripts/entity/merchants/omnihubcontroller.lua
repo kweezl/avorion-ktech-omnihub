@@ -1154,10 +1154,13 @@ function OmniHub.sendHubConfigTo(player)
         activelySell    = OmniHub.trader.activelySell,
         priceFactorBuy  = OmniHub.trader.buyPriceFactor,
         priceFactorSell = OmniHub.trader.sellPriceFactor,
-        limitBuy        = hubMaxLimit.buyLimit,
-        limitBase       = hubMaxLimit.prodBase,
-        limitCycles     = hubMaxLimit.prodCycles,
+        tradeStock      = hubMaxLimit.buyLimit,
+        prodBase        = hubMaxLimit.prodBase,
+        prodCycles      = hubMaxLimit.prodCycles,
         debug           = hubDebug,
+        -- Server-authoritative dev gate for the client's debug checkbox: the client's own
+        -- GameSettings().devMode can disagree (locally persisted /devmode) and goes stale.
+        devMode         = GameSettings().devMode == true,
     }
     invokeClientFunction(player, "receiveHubConfig", cfg)
 end
@@ -1179,10 +1182,10 @@ function OmniHub.applyHubConfig(cfg)
     -- passthrough goods"); prodBase/prodCycles are floored at 1 because 0 would zero out every produced
     -- good's limit and silently halt all production.
     local limitsChanged =
-            cfg.limitBuy ~= nil or cfg.limitBase ~= nil or cfg.limitCycles ~= nil
-    hubMaxLimit.buyLimit   = math.floor(clamp(cfg.limitBuy    or hubMaxLimit.buyLimit,   0, 1000000))
-    hubMaxLimit.prodBase   = math.floor(clamp(cfg.limitBase   or hubMaxLimit.prodBase,   1, 1000000))
-    hubMaxLimit.prodCycles = math.floor(clamp(cfg.limitCycles or hubMaxLimit.prodCycles, 1, 10000))
+            cfg.tradeStock ~= nil or cfg.prodBase ~= nil or cfg.prodCycles ~= nil
+    hubMaxLimit.buyLimit   = math.floor(clamp(cfg.tradeStock or hubMaxLimit.buyLimit,   0, 1000000))
+    hubMaxLimit.prodBase   = math.floor(clamp(cfg.prodBase   or hubMaxLimit.prodBase,   1, 1000000))
+    hubMaxLimit.prodCycles = math.floor(clamp(cfg.prodCycles or hubMaxLimit.prodCycles, 1, 10000))
     if limitsChanged then
         OmniHub.recomputeMaxLimits()
         -- Push only the stock-view maps so the open buy/sell stock column updates in place — no full
@@ -1662,11 +1665,11 @@ function OmniHub.onBuyNextPage()  buyPage  = buyPage  + 1; OmniHub.applyPageSlic
 function OmniHub.onSellPrevPage() sellPage = sellPage - 1; OmniHub.applyPageSlices() end
 function OmniHub.onSellNextPage() sellPage = sellPage + 1; OmniHub.applyPageSlices() end
 
--- Client-only tick (engine calls updateClient after update). While the window is open, commit Max Limit
--- fields that lost focus / took an Enter (pollLimitCommit), pushing the full config once per edit — no
+-- Client-only tick (engine calls updateClient after update). While the window is open, commit max-stock
+-- fields that lost focus / took an Enter (pollStockCommit), pushing the full config once per edit — no
 -- per-keystroke RPC. Defined here so it can see the client-local configUI upvalue.
 function OmniHub.updateClient(timeStep)
-    if OmniHub.windowOpen and configUI and configUI:pollLimitCommit() then
+    if OmniHub.windowOpen and configUI and configUI:pollStockCommit() then
         OmniHub.onConfigChanged()
     end
 end
