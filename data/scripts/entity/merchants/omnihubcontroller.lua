@@ -18,6 +18,7 @@ local OmniHubTradingDecision = include("tradingdecision")
 local OmniHubLog = include("log")
 local OmniHubStats = include("stats")
 local OmniHubRates = include("rates")
+local OmniHubEvents = include("events")
 local OmniHubMaxLimit = include("maxlimit")
 local OmniHubStorage = include("storage")
 local OmniHubSupplierStock = include("supplierstock")  -- pure pageSlice (clamp/bounds) for buy/sell paging
@@ -193,6 +194,30 @@ end
 local function hubWarn(fmt, ...)
     OmniHubLog.debug(true, "%s " .. fmt, hubTag(), ...)
 end
+
+-- ── Owner event notifications ────────────────────────────────────
+-- All batching/latching/formatting is pure (lib/omnihub/events.lua); this is the single emission
+-- funnel. eventsEnabled is the per-hub owner toggle (Config tab, persisted). The hub id is
+-- appended only in dev mode — players don't need internal ids (the hub is the chat sender, and
+-- the text carries name + sector + coords).
+local hubEvents     = OmniHubEvents.new()
+local eventsEnabled = true
+
+local function emitEvent(payload)
+    if not eventsEnabled or not payload then return end
+    local entity  = Entity()
+    local faction = Faction(entity.factionIndex)
+    if not faction then return end
+    local x, y     = Sector():getCoordinates()
+    local hubName  = (entity.name ~= nil and entity.name ~= "") and entity.name
+                     or (entity.title ~= "" and entity.title or "OmniHub")
+    local id       = GameSettings().devMode and string.format(" #%s", tostring(entity.index)) or ""
+    local msgType  = (payload.severity == "warning") and ChatMessageType.Warning
+                     or ChatMessageType.Information
+    faction:sendChatMessage(entity, msgType, string.format("%s [%s (%d:%d)]%s: %s",
+        tostring(hubName), Sector().name, x, y, id, payload.text))
+end
+
 local productionStatus = {}      -- { [moduleKey] = last canStartCycle decision } (transient)
 local DEBUG_LOG_INTERVAL = 10    -- seconds between production debug dumps
 
@@ -346,6 +371,8 @@ function OmniHub.secure()
     data.stats              = stats
     data.maxLimit           = hubMaxLimit
     data.debug              = hubDebug
+    data.events        = eventsEnabled
+    data.eventLatches  = OmniHubEvents.secure(hubEvents)
     data.tradingData        = OmniHub.secureTradingGoods()
     return data
 end
@@ -371,6 +398,8 @@ function OmniHub.restore(data)
         prodCycles = lim.prodCycles or old.pcCycles     or MAXLIMIT_DEFAULTS.prodCycles,
     }
     hubDebug = data.debug or false
+    eventsEnabled = data.events ~= false   -- default ON for hubs saved before this feature
+    OmniHubEvents.restore(hubEvents, data.eventLatches)
     if data.tradingData then OmniHub.restoreTradingGoods(data.tradingData) end
     -- Server builds the authoritative max-limit cache and pushes it to clients (sendGoods override);
     -- the client never has the inputs (installed/marks/hubMaxLimit arrive via RPC, not restore), so it
@@ -397,6 +426,7 @@ function OmniHub.update(timeStep)
     OmniHub.directorTick(timeStep)
     OmniHub.advanceStats(timeStep)
     OmniHubRates.advance(rates, timeStep)
+    OmniHub.eventsTick(timeStep)
     OmniHub.debugTick(timeStep)
 end
 
@@ -1055,6 +1085,15 @@ function OmniHub.advanceStats(timeStep)
     end
 end
 
+-- Rolls the event engine and emits whatever came due (digest, failures, condition edges, stall
+-- summaries). Runs even with eventsEnabled off so timers/latches stay current — the gate is at
+-- emit time, so re-enabling mid-flight doesn't replay stale state.
+function OmniHub.eventsTick(timeStep)
+    local due = OmniHubEvents.advance(hubEvents, timeStep)
+    if not due then return end
+    for _, payload in ipairs(due) do emitEvent(payload) end
+end
+
 function OmniHub.sendStats()
     if not onServer() then return end
     if not callerIsOwner() then return end  -- profit/trades/storage are owner-only
@@ -1174,6 +1213,7 @@ function OmniHub.sendHubConfigTo(player)
         prodBase        = hubMaxLimit.prodBase,
         prodCycles      = hubMaxLimit.prodCycles,
         debug           = hubDebug,
+        events          = eventsEnabled,
         -- Server-authoritative dev gate for the client's debug checkbox: the client's own
         -- GameSettings().devMode can disagree (locally persisted /devmode) and goes stale.
         devMode         = GameSettings().devMode == true,
@@ -1212,6 +1252,9 @@ function OmniHub.applyHubConfig(cfg)
     -- Debug toggle (dev-only checkbox). Only update when the client actually sent it, so config pushes
     -- from a non-dev client (no checkbox) don't silently clear a debug session a dev started.
     if cfg.debug ~= nil then hubDebug = cfg.debug and true or false end
+
+    -- Owner notifications toggle. nil-safe like debug: only update when the client sent it.
+    if cfg.events ~= nil then eventsEnabled = cfg.events and true or false end
 
     OmniHub.sendHubConfigTo(Player(callingPlayer))
 end
