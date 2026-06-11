@@ -101,13 +101,13 @@ end
 function OmniHubUIStatistics:setCapacity(capacity, recommended)
     capacity, recommended = capacity or 0, recommended or 0
     if recommended <= 0 then
-        self.capacityLabel.caption = string.format("Production capacity: %d", math.floor(capacity))
+        self.capacityLabel.caption = "Production capacity: ${c}"%_t % { c = math.floor(capacity) }
         self.capacityLabel.color   = ColorRGB(0.8, 0.8, 0.8)
         return
     end
     local pct = math.floor(capacity / recommended * 100 + 0.5)
-    self.capacityLabel.caption = string.format("Production capacity: %d / %d recommended (%d%%)",
-        math.floor(capacity), math.floor(recommended), pct)
+    self.capacityLabel.caption = "Production capacity: ${c} / ${r} recommended (${p}%)"%_t
+        % { c = math.floor(capacity), r = math.floor(recommended), p = pct }
     self.capacityLabel.color = capacity < recommended and ColorRGB(1.0, 0.5, 0.5)
                                                        or ColorRGB(0.8, 0.8, 0.8)
 end

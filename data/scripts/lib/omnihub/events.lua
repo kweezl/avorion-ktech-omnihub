@@ -13,6 +13,12 @@ local STALL_THRESHOLD = 600  -- a module must stall this long (actionable reason
 local STALL_INTERVAL  = 300  -- min seconds between stall/resume summary lines
 local MAX_LISTED      = 4    -- goods/products listed per summary before "+N more"
 
+-- Appends " +N more" when a summary truncated N entries; identity when nothing was dropped.
+local function plusMore(text, extra)
+    if extra > 0 then return text .. string.format(" +%d more", extra) end
+    return text
+end
+
 -- "1234567" -> "1,234,567" (sign preserved). Pure-Lua stand-in for createMonetaryString (engine).
 local function formatMoney(n)
     local s = tostring(math.floor(math.abs(n)))
@@ -67,8 +73,7 @@ local function buildDigest(s)
     local parts = {}
     if #sold   > 0 then parts[#parts + 1] = "sold "   .. table.concat(sold, ", ")   end
     if #bought > 0 then parts[#parts + 1] = "bought " .. table.concat(bought, ", ") end
-    local text = "Trade summary: " .. table.concat(parts, "; ")
-    if extra > 0 then text = text .. string.format(" +%d more", extra) end
+    local text = plusMore("Trade summary: " .. table.concat(parts, "; "), extra)
     text = text .. string.format(" — net %s cr", formatMoney(net))
     return { text = text, severity = "info" }
 end
@@ -209,8 +214,7 @@ local function buildStallSummary(s)
     for _, rtext in ipairs(order) do
         parts[#parts + 1] = string.format("%s (%s)", table.concat(groups[rtext], ", "), rtext)
     end
-    local text = "Production stalled for 10+ minutes: " .. table.concat(parts, "; ")
-    if extra > 0 then text = text .. string.format(" +%d more", extra) end
+    local text = plusMore("Production stalled for 10+ minutes: " .. table.concat(parts, "; "), extra)
     return { text = text .. ". Deliver the missing goods or add cargo space.", severity = "warning" }
 end
 
@@ -223,25 +227,20 @@ local function buildResumeSummary(s)
     if n == 0 then return nil end
     s.resumed = {}
     table.sort(names)
-    local text = "Production resumed: " .. table.concat(names, ", ")
-    if extra > 0 then text = text .. string.format(" +%d more", extra) end
-    return { text = text, severity = "info" }
+    return { text = plusMore("Production resumed: " .. table.concat(names, ", "), extra),
+             severity = "info" }
 end
 
 -- ── clock ────────────────────────────────────────────────────────
 -- Rolls all timers forward and returns the payloads now due (nil if none): drained queue entries
 -- first, then a due trade digest, then a due stall/resume summary.
 function OmniHubEvents.advance(s, dt)
-    local out = nil
-    local function push(p)
-        if not p then return end
-        out = out or {}
-        out[#out + 1] = p
-    end
-
     -- Immediate payloads drain regardless of dt — tradeFailed/check* are "next advance", period.
+    -- The queue TABLE becomes the output (no copy); this runs every server tick, so no closures
+    -- or avoidable allocations here.
+    local out = nil
     if #s.queue > 0 then
-        for _, p in ipairs(s.queue) do push(p) end
+        out = s.queue
         s.queue = {}
     end
 
@@ -250,8 +249,12 @@ function OmniHubEvents.advance(s, dt)
     if s.tradeClock ~= nil then
         s.tradeClock = s.tradeClock + dt
         if s.tradeClock >= DIGEST_INTERVAL then
-            push(buildDigest(s))
+            local digest = buildDigest(s)
             s.trades, s.tradeClock = {}, nil
+            if digest then
+                out = out or {}
+                out[#out + 1] = digest
+            end
         end
     end
 
@@ -264,8 +267,9 @@ function OmniHubEvents.advance(s, dt)
         local resumeSummary = buildResumeSummary(s)
         if stallSummary or resumeSummary then
             s.stallClock = 0
-            push(stallSummary)
-            push(resumeSummary)
+            out = out or {}
+            if stallSummary  then out[#out + 1] = stallSummary  end
+            if resumeSummary then out[#out + 1] = resumeSummary end
         end
     end
 

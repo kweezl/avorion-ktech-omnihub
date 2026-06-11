@@ -447,11 +447,6 @@ function OmniHub.runProductionCycles(timeStep)
     end
 end
 
--- Display name for stall messages: the module's catalog name ("Steel Factory"), key as fallback.
-local function moduleDisplayName(key)
-    local def = OmniHubModuleDefs.get(key)
-    return (def and def.name) or tostring(key)
-end
 
 function OmniHub.tickRecipe(key, count, timeStep)
     local prod = OmniHubModuleDefs.resolveRecipe(key)
@@ -500,8 +495,11 @@ function OmniHub.tickRecipe(key, count, timeStep)
 
     local decision = OmniHubProduction.canStartCycle(prod, count, query)
     productionStatus[key] = decision  -- remembered for the debug logger (reason it could/couldn't start)
-    OmniHubEvents.recordStallState(hubEvents, key, moduleDisplayName(key),
-        not decision.canProduce, decision.reason, decision.good)
+    -- The display name is only read when a stall entry is created — skip the lookup otherwise.
+    local stalled = not decision.canProduce
+    OmniHubEvents.recordStallState(hubEvents, key,
+        stalled and OmniHubModuleDefs.displayName(key) or nil,
+        stalled, decision.reason, decision.good)
     if not decision.canProduce then return end
 
     -- Ingredients leave cargo up-front (vanilla behavior); their RATE is accrued smoothly over the
@@ -533,8 +531,7 @@ function OmniHub.debugTick(timeStep)
         hubLog("  (no modules installed)")
     end
     for key, count in pairs(installed) do
-        local def      = OmniHubModuleDefs.get(key)
-        local label    = def and def.name or key
+        local label    = OmniHubModuleDefs.displayName(key)
         local progress = productionProgress[key]
         if progress then
             hubLog("  ACTIVE  %s x%d  %d%%%s",
@@ -1875,8 +1872,8 @@ function OmniHub.receiveHubConfig(cfg)
     -- receiveGoods diagnostics) obey the same gate as the server's. Without this the client copy of
     -- hubDebug stays false forever and client debug output is impossible.
     if cfg and cfg.debug ~= nil then hubDebug = cfg.debug and true or false end
-    -- Same mirror for the events toggle: nothing client-side reads it today (emitEvent is
-    -- server-only), but a stale client copy is a trap for future client-side gating.
+    -- Same mirror for the events toggle: keeps the client copy equal to the server's so any
+    -- future client-side gating reads the real value, never the constructor default.
     if cfg and cfg.events ~= nil then eventsEnabled = cfg.events and true or false end
     if not configUI then return end
     configUI:apply(cfg)
