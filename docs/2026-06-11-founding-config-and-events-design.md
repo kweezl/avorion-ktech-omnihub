@@ -104,8 +104,11 @@ wall-clock.
     transaction log).
   - **Hub id (entity index) is appended only when the server's `GameSettings().devMode` is on**,
     checked at emit time. Regular players see no internal ids.
-  - Severity mapping: digests → Information; failures and condition events → Warning/Error
-    (exact `ChatMessageType` values confirmed against `stubs/generated/` at implementation).
+  - Channel: ALL events are sent as `ChatMessageType.Economy` with an empty sender — the vanilla
+    economy-notification shape (supplycommand.lua). Economy lands in the chat's Economy tab with
+    no alert sound; Warning/Information ring the same chime as combat alerts, which playtesting
+    showed is far too alarming for trade/production status. Payload `severity` remains in the
+    module contract but does not currently pick the message type.
   - Alliance-owned hubs message alliance chat (all members see it) — matches vanilla.
 - Hook points:
   - `onDockedTradeBought` / `onDockedTradeSold` → `recordTrade` (player UI trades route through

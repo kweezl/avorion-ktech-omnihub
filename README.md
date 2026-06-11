@@ -134,7 +134,8 @@ When a hub's sector unloads, a galaxy-wide director takes over:
 ## Owner notifications
 
 When **Send event notifications** is enabled in the hub's Config tab (default on), the hub
-messages its owning faction in chat — alliance hubs message alliance chat:
+messages its owning faction in the chat's **Economy** tab (like vanilla trade notifications — no
+alert sound) — alliance hubs message alliance members:
 
 - **Trade summary** — at most one line per 5 minutes: goods sold/bought (top 4 by value) and the
   net credits.

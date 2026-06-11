@@ -203,8 +203,8 @@ end
 -- ── Owner event notifications ────────────────────────────────────
 -- All batching/latching/formatting is pure (lib/omnihub/events.lua); this is the single emission
 -- funnel. eventsEnabled is the per-hub owner toggle (Config tab, persisted). The hub id is
--- appended only in dev mode — players don't need internal ids (the hub is the chat sender, and
--- the text carries name + sector + coords).
+-- appended only in dev mode — players don't need internal ids (the text carries name + sector +
+-- coords).
 local hubEvents     = OmniHubEvents.new()
 local eventsEnabled = true
 
@@ -217,9 +217,12 @@ local function emitEvent(payload)
     local hubName  = (entity.name ~= nil and entity.name ~= "") and entity.name
                      or (entity.title ~= "" and entity.title or "OmniHub")
     local id       = GameSettings().devMode and string.format(" #%s", tostring(entity.index)) or ""
-    local msgType  = (payload.severity == "warning") and ChatMessageType.Warning
-                     or ChatMessageType.Information
-    faction:sendChatMessage(entity, msgType, string.format("%s [%s (%d:%d)]%s: %s",
+    -- ALL events go out as Economy with an empty sender — the vanilla economy-notification shape
+    -- (supplycommand.lua:419). Economy lands in the chat's Economy tab with NO alert sound;
+    -- Warning/Information ring the same chime as combat alerts, far too alarming for trade and
+    -- production status. payload.severity stays in the contract (the texts and any future
+    -- channel re-split use it) but deliberately does not pick the message type.
+    faction:sendChatMessage("", ChatMessageType.Economy, string.format("%s [%s (%d:%d)]%s: %s",
         tostring(hubName), Sector().name, x, y, id, payload.text))
 end
 
