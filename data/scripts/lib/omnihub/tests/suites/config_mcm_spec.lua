@@ -12,12 +12,23 @@ local OmniHubTest = include("lib/omnihub/tests/framework")
 --
 -- This loads config.lua's chunk fresh with the optional dependency poisoned (MCM present, bind
 -- raises) and asserts the module still loads and exposes a working get() that falls back to defaults.
+--
+-- OFF-ENGINE ONLY: the reproduction re-loads config.lua via loadfile(), using the repo path the
+-- off-engine harness exports (OMNIHUB_MODCONFIG_PATH). In-game loadfile() is sandboxed and that path
+-- isn't known, and the engine's partial-namespace-on-chunk-error behavior can't be simulated
+-- deterministically — so this suite skips in-game. The off-engine run (dev machine + CI) is the real
+-- regression guard for this invariant.
 
 return function(runner)
     runner:suite("config_mcm")
 
     runner:test("get() survives a throwing mcm.bind (optional dep fully guarded)", function()
-        local repoRoot = (_G.OMNIHUB_MODCONFIG_PATH or ""):gsub("[/\\]modconfig%.lua$", "")
+        local modconfigPath = _G.OMNIHUB_MODCONFIG_PATH
+        if not modconfigPath then
+            print("[OmniHubTest] config_mcm: skipping — loadfile reproduction is off-engine only")
+            return
+        end
+        local repoRoot = modconfigPath:gsub("[/\\]modconfig%.lua$", "")
         local path = repoRoot .. "/data/scripts/lib/omnihub/config.lua"
         local chunk, err = loadfile(path)
         OmniHubTest.assertNotNil(chunk, "loadfile config.lua: " .. tostring(err))
