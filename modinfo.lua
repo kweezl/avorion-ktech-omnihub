@@ -23,7 +23,7 @@ meta =
     authors = {"kweezl"},
 
     -- Semver "major.minor.patch" or "major.minor".
-    version = "1.0.0",
+    version = "1.0.1",
 
     -- Tested Avorion version range. max = "2.*" covers all 2.x patch releases.
     dependencies = {
