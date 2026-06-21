@@ -132,11 +132,63 @@ for _, opt in ipairs(OmniHubConfig.schema) do
     OmniHubConfig.defaults[opt.key] = v
 end
 
--- Resolve + bind MCM ONCE at load. include() throws on a missing module and MCM is an OPTIONAL
--- dependency, so guard with pcall: absent MCM -> config nil -> built-in defaults are used.
--- "ktech-omnihub" must match the `name` field in modinfo.lua (MCM keys mods by that name).
-local ok, mcm = pcall(include, "mcm")
-local config  = (ok and mcm) and mcm.bind("ktech-omnihub") or nil
+-- Resolve + bind MCM ONCE at load. MCM is an OPTIONAL dependency, so every step is guarded:
+--
+--   1) Gate the include on MCM actually being enabled. include() on an ABSENT module throws, and the
+--      engine writes that failure to the log BEFORE Lua's pcall can swallow it — so a guarded include
+--      still spams the log on every machine without MCM. We avoid that entirely by first checking the
+--      active-mod list (Mods(), the same pattern vanilla factionpacks.lua / MCM's modconfigloader use)
+--      and only include() when MCM is present. When it's absent we print our own one-line notice.
+--
+--   2) Still wrap include()+bind() in pcall. Even with MCM enabled, bind() can throw (e.g. MCM
+--      resolved mid-load in a shared multi-script entity VM, where bind isn't defined yet). An
+--      unguarded throw here would abort this chunk after `defaults` but BEFORE get() is defined, and
+--      the engine would hand include("config") the partial namespace table — a config with no .get,
+--      surfacing as "attempt to call field 'get' (a nil value)" at the first caller.
+--
+-- Any failure -> config nil -> built-in defaults. "ktech-omnihub" must match the `name` in
+-- modinfo.lua; "3674093144" is MCM's Workshop id (its modinfo `id`).
+local LOG_PREFIX      = "[OmniHub]"
+local MCM_WORKSHOP_ID = "3674093144"
+
+-- Is MCM active? "enabled" / "disabled" / "unknown" (Mods() unavailable in this context — e.g.
+-- off-engine, where the global is absent). Detection-only: it never include()s "mcm", so callers can
+-- decide whether to attempt the include WITHOUT tripping the engine's failed-include log on machines
+-- that don't have MCM. On "unknown" the loader below still attempts the include so MCM users are
+-- never silently dropped (cost: one engine log line). Exposed so the test suites share one detector.
+function OmniHubConfig.mcmState()
+    if Mods == nil then return "unknown" end
+    local ok, found = pcall(function()
+        for _, mod in pairs(Mods()) do
+            if mod.id == MCM_WORKSHOP_ID then return true end
+        end
+        return false
+    end)
+    if not ok then return "unknown" end
+    return found and "enabled" or "disabled"
+end
+
+-- Resolve the bound MCM instance ({ get = fn, ... }) once at load, or nil to fall back to built-in
+-- defaults. Indirect pcall(include, ...) guards a missing/throwing include; a second pcall guards
+-- bind() (which can throw even when MCM is present). Returning the value — rather than mutating an
+-- upvalue inside a closure — means a binding failure can never leave config.lua half-loaded.
+local function resolveMcmConfig()
+    if OmniHubConfig.mcmState() == "disabled" then
+        print(LOG_PREFIX .. " MCM (Mod Configuration Menu) is disabled — using built-in config defaults.")
+        return nil
+    end
+    local incOk, mcm = pcall(include, "mcm")
+    if not incOk or not mcm then return nil end
+    ---@cast mcm table
+    local bindOk, bound = pcall(mcm.bind, "ktech-omnihub")
+    if not bindOk then
+        print(LOG_PREFIX .. " MCM detected but could not be loaded — using built-in config defaults.")
+        return nil
+    end
+    return bound
+end
+
+local config = resolveMcmConfig()
 
 -- Returns the config value for key. Reads from MCM on-demand when present (so admin changes take
 -- effect immediately), else from the built-in defaults.

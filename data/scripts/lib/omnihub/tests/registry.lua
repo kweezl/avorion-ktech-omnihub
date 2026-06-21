@@ -10,6 +10,7 @@ OmniHubTestRegistry = {}
 -- a function(runner) that registers its tests.
 OmniHubTestRegistry.pure = {
     "config_spec",
+    "config_mcm_spec",
     "events_spec",
     "goodstable_spec",
     "log_spec",

@@ -6,13 +6,14 @@ local OmniHubConfig = include("lib/omnihub/config")
 local eq   = OmniHubTest.assertEqual
 local nilf = OmniHubTest.assertNil
 
--- Is MCM installed in this VM? config.lua binds it the same way (pcall include "mcm"). When MCM is
--- absent, OmniHubConfig.get returns the built-in fractional defaults; when present it returns the
--- admin's live (possibly customized) values — so the default-equality checks below only hold without
--- MCM. The MCM-present behavior is exercised by the integration suite's MCM round-trip instead.
+-- Is MCM active in this VM? Routed through OmniHubConfig.mcmState() (a Mods()-based check) rather than
+-- pcall(include, "mcm") — a failed include still writes the engine's "module 'mcm' not found" log line
+-- (and a stack trace) even inside pcall, so attempting it just to detect MCM spams the in-game test
+-- log on machines without MCM. When MCM is absent, OmniHubConfig.get returns the built-in fractional
+-- defaults; when present it returns the admin's live values — so the default-equality checks below
+-- only hold without MCM. The MCM-present behavior is exercised by the integration MCM round-trip.
 local function mcmInstalled()
-    local ok, mcm = pcall(include, "mcm")
-    return ok and mcm ~= nil
+    return OmniHubConfig.mcmState() == "enabled"
 end
 
 -- The documented fractional defaults (percent keys already divided by 100). Reused by both the
