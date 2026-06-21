@@ -332,12 +332,18 @@ return function(runner)
     -- -> fractional conversion in OmniHubConfig.get) and confirm get() reflects them, then restore the
     -- admin's live config. Skipped with a logged reason when MCM is not installed.
     runner:test("MCM round-trip reflects in OmniHubConfig.get (incl. percent conversion)", function()
-        local mcm = nil
-        local ok, mod = pcall(include, "mcm")
-        if ok then mcm = mod end
-        if not mcm then
+        -- Detect via Mods() first (OmniHubConfig.mcmState). A failed include("mcm") logs the engine's
+        -- "module 'mcm' not found" error + a stack trace even inside pcall, so only attempt the include
+        -- once we know MCM is actually enabled.
+        if OmniHubConfig.mcmState() ~= "enabled" then
             print("[OmniHubTest] integration: skipping MCM round-trip — MCM not installed")
             tru(true, "skipped: MCM not installed")
+            return
+        end
+        local ok, mcm = pcall(include, "mcm")
+        if not ok or not mcm then
+            print("[OmniHubTest] integration: skipping MCM round-trip — MCM enabled but not loadable")
+            tru(true, "skipped: MCM not loadable")
             return
         end
         local cfg = mcm.bind("ktech-omnihub")

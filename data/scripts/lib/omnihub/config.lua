@@ -151,9 +151,12 @@ end
 local LOG_PREFIX      = "[OmniHub]"
 local MCM_WORKSHOP_ID = "3674093144"
 
--- "enabled" / "disabled" / "unknown" (Mods() unavailable in this context). On "unknown" we still
--- attempt the include below, so MCM users are never silently dropped (cost: one engine log line).
-local function mcmState()
+-- Is MCM active? "enabled" / "disabled" / "unknown" (Mods() unavailable in this context — e.g.
+-- off-engine, where the global is absent). Detection-only: it never include()s "mcm", so callers can
+-- decide whether to attempt the include WITHOUT tripping the engine's failed-include log on machines
+-- that don't have MCM. On "unknown" the loader below still attempts the include so MCM users are
+-- never silently dropped (cost: one engine log line). Exposed so the test suites share one detector.
+function OmniHubConfig.mcmState()
     if Mods == nil then return "unknown" end
     local ok, found = pcall(function()
         for _, mod in pairs(Mods()) do
@@ -170,7 +173,7 @@ end
 -- bind() (which can throw even when MCM is present). Returning the value — rather than mutating an
 -- upvalue inside a closure — means a binding failure can never leave config.lua half-loaded.
 local function resolveMcmConfig()
-    if mcmState() == "disabled" then
+    if OmniHubConfig.mcmState() == "disabled" then
         print(LOG_PREFIX .. " MCM (Mod Configuration Menu) is disabled — using built-in config defaults.")
         return nil
     end
